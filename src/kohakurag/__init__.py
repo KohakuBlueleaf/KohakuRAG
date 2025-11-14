@@ -15,7 +15,16 @@ from .parsers import (
     payload_to_dict,
     text_to_payload,
 )
-from .pipeline import MockChatModel, QueryPlanner, RAGPipeline, SimpleQueryPlanner
+from .pipeline import (
+    MockChatModel,
+    PromptTemplate,
+    QueryPlanner,
+    RAGPipeline,
+    SimpleQueryPlanner,
+    StructuredAnswer,
+    StructuredAnswerResult,
+    format_snippets,
+)
 from .types import (
     ContextSnippet,
     DocumentPayload,
@@ -38,13 +47,17 @@ __all__ = [
     "MockChatModel",
     "NodeKind",
     "OpenAIChatModel",
+    "PromptTemplate",
     "QueryPlanner",
     "RAGPipeline",
     "RetrievalMatch",
     "SimpleQueryPlanner",
     "StoredNode",
+    "StructuredAnswer",
+    "StructuredAnswerResult",
     "TreeNode",
     "dict_to_payload",
+    "format_snippets",
     "markdown_to_payload",
     "payload_to_dict",
     "text_to_payload",

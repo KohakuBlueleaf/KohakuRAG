@@ -46,18 +46,16 @@ class OpenAIChatModel(ChatModel):
             key = dotenv_vars.get("OPENAI_API_KEY")
         if not key:
             raise ValueError("OPENAI_API_KEY is required for OpenAIChatModel.")
-        self._system_prompt = (
-            system_prompt
-            or "You are a precise assistant specializing in energy and sustainability."
-        )
+        self._system_prompt = system_prompt or "You are a helpful assistant."
         self._client = OpenAI(api_key=key, organization=organization)
         self._model = model
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        system = system_prompt or self._system_prompt
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
-                {"role": "system", "content": self._system_prompt},
+                {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
         )

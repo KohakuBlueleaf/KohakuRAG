@@ -332,6 +332,13 @@ def matches_to_snippets(
     parent_depth: int = 1,
     child_depth: int = 0,
 ) -> list[ContextSnippet]:
+    """Convert retrieval matches into context snippets using hierarchical context.
+
+    For each matched node, this helper pulls a small neighborhood of parents
+    and children via ``get_context`` and flattens them into ``ContextSnippet``
+    objects. It deliberately keeps duplicates and both sentences and paragraphs
+    so callers see the raw local context around each hit.
+    """
     snippets: list[ContextSnippet] = []
     for rank, match in enumerate(matches, 1):
         nodes = store.get_context(

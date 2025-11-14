@@ -1,7 +1,10 @@
 """High-level RAG pipeline orchestration."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Iterable, Protocol, Sequence
+import json
+from typing import Iterable, Mapping, Protocol, Sequence
 
 from .datastore import HierarchicalNodeStore, InMemoryNodeStore, matches_to_snippets
 from .embeddings import EmbeddingModel, JinaEmbeddingModel
@@ -11,7 +14,12 @@ from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
 class ChatModel(Protocol):
     """Protocol for chat backends."""
 
-    def complete(self, prompt: str) -> str:  # pragma: no cover
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+    ) -> str:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -37,7 +45,12 @@ class RetrievalResult:
 class MockChatModel:
     """Rule-based fallback LLM used for local tests."""
 
-    def complete(self, prompt: str) -> str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+    ) -> str:
         return "Mock response:\n" + prompt.split("Context:", 1)[-1].strip()[:200]
 
 
@@ -67,33 +80,36 @@ class RAGPipeline:
         self._store.upsert_nodes(list(documents))
 
     def retrieve(self, question: str, *, top_k: int | None = None) -> RetrievalResult:
+        """Naive per-query top-k retrieval over the store.
+
+        For each planner-generated query, we independently search the vector
+        store for the top-k matching nodes (sentences or paragraphs). Results
+        from different queries are not re-sorted or merged by score; they are
+        simply concatenated in planner order so each query contributes its own
+        neighborhood of matches when top_k > 0.
+        """
         queries = list(self._planner.plan(question))
         if not queries:
             raise ValueError("Planner returned no queries.")
         query_vectors = self._embedder.embed(queries)
-        combined: dict[str, RetrievalMatch] = {}
-        for idx, vector in enumerate(query_vectors):
+        k = top_k or self._top_k
+        all_matches: list[RetrievalMatch] = []
+        for vector in query_vectors:
             matches = self._store.search(
                 vector,
-                k=top_k or self._top_k,
+                k=k,
                 kinds={NodeKind.SENTENCE, NodeKind.PARAGRAPH},
             )
-            for match in matches:
-                existing = combined.get(match.node.node_id)
-                if existing is None or match.score > existing.score:
-                    combined[match.node.node_id] = match
-        ordered_matches = sorted(
-            combined.values(), key=lambda item: item.score, reverse=True
-        )[: top_k or self._top_k]
+            all_matches.extend(matches)
         snippets = matches_to_snippets(
-            ordered_matches,
+            all_matches,
             self._store,
             parent_depth=1,
             child_depth=1,
         )
         return RetrievalResult(
             question=question,
-            matches=ordered_matches,
+            matches=all_matches,
             snippets=snippets,
         )
 
@@ -107,6 +123,50 @@ class RAGPipeline:
             "snippets": retrieval.snippets,
         }
 
+    def structured_answer(
+        self,
+        question: str,
+        prompt: PromptTemplate,
+        *,
+        top_k: int | None = None,
+    ) -> StructuredAnswerResult:
+        retrieval = self.retrieve(question, top_k=top_k)
+        rendered_prompt = prompt.render(question=question, snippets=retrieval.snippets)
+        raw = self._chat.complete(rendered_prompt, system_prompt=prompt.system_prompt)
+        parsed = self._parse_structured_response(raw)
+        return StructuredAnswerResult(
+            answer=parsed,
+            retrieval=retrieval,
+            raw_response=raw,
+            prompt=rendered_prompt,
+        )
+
+    def run_qa(
+        self,
+        question: str,
+        *,
+        system_prompt: str,
+        user_template: str,
+        additional_info: Mapping[str, object] | None = None,
+        top_k: int | None = None,
+    ) -> StructuredAnswerResult:
+        """High-level entry point for structured question answering.
+
+        This method keeps the RAG core generic by requiring callers to supply
+        their own system prompt, user prompt template, and any per-call metadata
+        via ``additional_info``.
+        """
+        template = PromptTemplate(
+            system_prompt=system_prompt,
+            user_template=user_template,
+            additional_info=additional_info,
+        )
+        return self.structured_answer(
+            question=question,
+            prompt=template,
+            top_k=top_k,
+        )
+
     def _build_prompt(
         self,
         question: str,
@@ -119,8 +179,98 @@ class RAGPipeline:
             )
         context_text = "\n\n".join(context_blocks) if context_blocks else "None"
         return (
-            "You are an assistant focusing on energy and sustainability topics.\n"
+            "You are an assistant.\n"
             "Use only the provided context to answer the question.\n"
             "If the context is insufficient, respond with 'NOT ENOUGH DATA'.\n\n"
             f"Question: {question}\n\nContext:\n{context_text}\n\nAnswer:"
         )
+
+    def _parse_structured_response(self, raw: str) -> StructuredAnswer:
+        try:
+            start = raw.index("{")
+            end = raw.rindex("}") + 1
+            snippet = raw[start:end]
+            data = json.loads(snippet)
+        except Exception:
+            return StructuredAnswer(
+                answer="",
+                answer_value="",
+                ref_id=[],
+                explanation="",
+            )
+        answer = str(data.get("answer", "")).strip()
+        answer_value = str(data.get("answer_value", "")).strip()
+        explanation = str(data.get("explanation", "")).strip()
+        ref_ids_raw = data.get("ref_id", [])
+        ref_ids: list[str] = []
+        if isinstance(ref_ids_raw, str):
+            ref_ids_raw = [ref_ids_raw]
+        if isinstance(ref_ids_raw, Sequence):
+            for item in ref_ids_raw:
+                text = str(item).strip()
+                if text:
+                    ref_ids.append(text)
+        return StructuredAnswer(
+            answer=answer,
+            answer_value=answer_value,
+            ref_id=ref_ids,
+            explanation=explanation,
+        )
+
+
+def format_snippets(snippets: Sequence[ContextSnippet]) -> str:
+    """Render retrieval snippets into a compact context block.
+
+    Each snippet becomes one block. Blocks are joined by ``---`` lines for
+    readability. All snippets passed in are included; ``max_chars`` is
+    accepted for backward compatibility but not enforced.
+    """
+    blocks: list[str] = []
+    for snippet in snippets:
+        meta = snippet.metadata or {}
+        doc_id = str(meta.get("document_id", "unknown"))
+        full_node_id = snippet.node_id
+        # Strip the document prefix so headers are shorter: doc:sec:p -> sec:p.
+        node_label = (
+            full_node_id.split(":", 1)[1] if ":" in full_node_id else full_node_id
+        )
+        header = f"[ref_id={doc_id} node={node_label} score={snippet.score:.3f}] "
+        text = snippet.text.strip()
+        blocks.append(header + text)
+    return "\n---\n".join(blocks)
+
+
+@dataclass
+class PromptTemplate:
+    """Container describing how to build the LLM user prompt."""
+
+    system_prompt: str
+    user_template: str
+    additional_info: Mapping[str, object] | None = None
+
+    def render(self, *, question: str, snippets: Sequence[ContextSnippet]) -> str:
+        context = format_snippets(snippets)
+        extras = self.additional_info or {}
+        extras_json = json.dumps(extras, ensure_ascii=False)
+        return self.user_template.format(
+            question=question,
+            context=context,
+            additional_info_json=extras_json,
+            additional_info=extras,
+        )
+
+
+@dataclass
+class StructuredAnswer:
+    answer: str
+    answer_value: str
+    ref_id: list[str]
+    explanation: str
+
+
+@dataclass
+class StructuredAnswerResult:
+    answer: StructuredAnswer
+    retrieval: RetrievalResult
+    raw_response: str
+    prompt: str
