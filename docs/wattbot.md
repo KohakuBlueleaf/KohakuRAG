@@ -46,8 +46,33 @@ python scripts/wattbot_validate.py \
 The validation script compares your predictions to the ground truth using the official WattBot score recipe (0.75 × answer_value, 0.15 × ref_id, 0.10 × NA handling). Use `--show-errors 5` to print the lowest-scoring rows and inspect which answers, citations, or NA flags need attention.
 
 ## Configuring LLM and embeddings
+
+### OpenAI Configuration
 - Set `OPENAI_API_KEY` for production runs. The scripts automatically choose the OpenAI chat backend when the key is available; otherwise they fall back to a lightweight mock useful for unit tests.
+- **Rate limit handling is automatic** — the `OpenAIChatModel` class includes intelligent retry logic that:
+  - Parses server-recommended wait times from error messages
+  - Falls back to exponential backoff if no specific delay is provided
+  - Prints clear retry messages for monitoring
+  - Continues processing without manual intervention
+
+**Recommended configuration for WattBot 2025:**
+```bash
+# For 500K TPM accounts (common for gpt-4o-mini)
+python scripts/wattbot_answer.py \
+    --max-workers 1 \         # Sequential to avoid hitting TPM
+    --model gpt-4o-mini \
+    --top-k 6
+
+# For higher TPM accounts
+python scripts/wattbot_answer.py \
+    --max-workers 4 \         # Parallel processing
+    --model gpt-4o-mini \
+    --top-k 8
+```
+
+### Embedding Configuration
 - Every environment uses `jinaai/jina-embeddings-v3` via `JinaEmbeddingModel`. Alternate encoders can implement the `EmbeddingModel` protocol, but we recommend sticking with Jina to keep embedding behavior aligned.
+- First run downloads ~2GB model from Hugging Face — set `HF_HOME` if you need a custom cache location.
 
 ## Testing checklist
 - `scripts/wattbot_fetch_docs.py --limit 2`: downloads/converts a couple of PDFs and emits JSON payloads into `artifacts/docs/`.

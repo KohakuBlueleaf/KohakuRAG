@@ -36,6 +36,41 @@ KohakuRAG is a general-purpose Retrieval-Augmented Generation (RAG) stack. The c
 3. **Answerer** – sends the question + snippets + project-specific instructions to a chat model. The chat backend is pluggable (OpenAI, Azure, OSS). Responses are validated against a schema interface so different projects can define custom answer shapes.
 4. **Post-processing** – converts the structured answer object into whatever output format the caller expects (CSV row, JSON payload, etc.).
 
+### LLM Integration with Automatic Rate Limit Handling
+
+The `OpenAIChatModel` class provides production-ready OpenAI integration with intelligent rate limit management:
+
+**Rate Limit Resilience:**
+- **Automatic retry** – catches `openai.RateLimitError` and retries with configurable backoff
+- **Server-guided delays** – parses error messages like "Please try again in 23ms" and respects the suggested wait time
+- **Exponential backoff** – falls back to 1s, 2s, 4s, 8s, 16s... if no specific delay is provided
+- **Configurable behavior** – adjust `max_retries` and `base_retry_delay` based on your rate limits
+
+**Why This Matters:**
+- OpenAI's TPM (tokens per minute) limits can be restrictive for batch processing
+- The WattBot 2025 competition example uses `gpt-4o-mini` with 500K TPM limits
+- Automatic retry prevents pipeline failures during long-running batch jobs
+- Transparent logging shows retry attempts without requiring manual intervention
+
+**Implementation Details:**
+```python
+# In src/kohakurag/llm.py
+def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+    for attempt in range(self._max_retries + 1):
+        try:
+            return self._client.chat.completions.create(...)
+        except RateLimitError as e:
+            wait_time = self._parse_retry_after(error_msg) or (self._base_retry_delay * (2 ** attempt))
+            print(f"Rate limit hit (attempt {attempt + 1}). Waiting {wait_time:.2f}s...")
+            time.sleep(wait_time)
+```
+
+This design ensures that:
+1. **No manual intervention** – scripts continue running despite rate limits
+2. **Optimal throughput** – uses server-recommended delays instead of arbitrary waits
+3. **Cost efficiency** – avoids token waste from failed requests
+4. **Monitoring friendly** – prints clear retry messages for observability
+
 ## Development workflow
 1. **Document staging** – convert PDFs or external data into structured payloads (optionally via Markdown/JSON intermediates) with per-section text and captions.
 2. **Index build** – run the project-specific ingestion script (for example, the WattBot helpers under `scripts/`) to feed payloads through the core indexer and populate the datastore.

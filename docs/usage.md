@@ -41,18 +41,84 @@ Run the full RAG pipeline (requires `OPENAI_API_KEY`) and produce a Kaggle-style
 - Uses the `answer_unit` column as known metadata (not predicted),
 - Calls the core RAG pipeline to get `answer`, `answer_value`, `ref_id`, `explanation`,
 - Resolves `ref_url` and `supporting_materials` from `data/metadata.csv` using the chosen `ref_id` values.
+- **Automatically handles OpenAI rate limits** with intelligent retry logic
 
 ```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/test_Q.csv --output artifacts/wattbot_answers.csv --model gpt-5-mini --top-k 6 --max-workers 4 --max-retries 2
+python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/test_Q.csv --output artifacts/wattbot_answers.csv --model gpt-4o-mini --top-k 6 --max-workers 4 --max-retries 2
 ```
-Key flags:
-- `--max-workers`: how many questions to process in parallel (each worker has its own datastore + LLM client). Tune based on your OpenAI rate limits; `--max-workers 1` runs sequentially.
-- `--planner-model`: optional model used to generate additional retrieval queries (defaults to `--model`).
-- `--planner-max-queries`: total number of retrieval queries per question (original user question + LLM-generated queries).
-- `--metadata`: path to `metadata.csv` (defaults to `data/metadata.csv`) for resolving `ref_url` and `supporting_materials`.
-- `--max-retries`: number of extra attempts to make per question when the model returns `is_blank`, each time retrieving a larger set of snippets.
+
+### Key Flags
+
+- `--max-workers`: Number of questions to process in parallel (each worker has its own datastore + LLM client). **Tune based on your OpenAI rate limits**; `--max-workers 1` runs sequentially.
+- `--planner-model`: Optional model used to generate additional retrieval queries (defaults to `--model`).
+- `--planner-max-queries`: Total number of retrieval queries per question (original user question + LLM-generated queries).
+- `--metadata`: Path to `metadata.csv` (defaults to `data/metadata.csv`) for resolving `ref_url` and `supporting_materials`.
+- `--max-retries`: Number of extra attempts to make per question when the model returns `is_blank`, each time retrieving a larger set of snippets.
 
 The script writes each answered row to `--output` as soon as it finishes, so you can inspect partial results while a long run is still in progress.
+
+### Rate Limit Handling
+
+**KohakuRAG automatically handles OpenAI rate limits** without requiring manual intervention:
+
+#### How It Works
+
+1. **Server-recommended delays**: When OpenAI returns a rate limit error like:
+   ```
+   Rate limit reached for gpt-4o-mini in organization org-xxx on tokens per min (TPM):
+   Limit 500000, Used 500000, Requested 193. Please try again in 23ms.
+   ```
+   The system parses "23ms" and waits exactly that long (plus a small buffer).
+
+2. **Exponential backoff**: If no specific delay is provided, uses exponential backoff:
+   - Attempt 1: wait 1 second
+   - Attempt 2: wait 2 seconds
+   - Attempt 3: wait 4 seconds
+   - Attempt 4: wait 8 seconds
+   - Attempt 5: wait 16 seconds
+
+3. **Transparent logging**: You'll see messages like:
+   ```
+   Rate limit hit (attempt 1/6). Waiting 0.12s before retry...
+   Rate limit hit (attempt 2/6). Waiting 2.00s before retry...
+   ```
+
+#### Tuning for Your Rate Limits
+
+**Low TPM accounts (e.g., 500K TPM):**
+```bash
+python scripts/wattbot_answer.py \
+    --max-workers 1 \      # Process sequentially
+    --model gpt-4o-mini \
+    --top-k 4              # Reduce tokens per request
+```
+
+**Higher TPM accounts (e.g., 2M+ TPM):**
+```bash
+python scripts/wattbot_answer.py \
+    --max-workers 8 \      # More parallelism
+    --model gpt-4o \
+    --top-k 10
+```
+
+**Customizing retry behavior in code:**
+```python
+from kohakurag.llm import OpenAIChatModel
+
+# More aggressive retries for restrictive limits
+chat = OpenAIChatModel(
+    model="gpt-4o-mini",
+    max_retries=10,          # Retry up to 10 times
+    base_retry_delay=2.0,    # Start with 2s instead of 1s
+)
+```
+
+#### Best Practices
+
+1. **Start conservative**: Use `--max-workers 1` for your first run to understand your rate limits
+2. **Monitor the logs**: Watch for retry messages to gauge how often you're hitting limits
+3. **Scale up gradually**: Increase `--max-workers` until you start seeing frequent retries, then back off
+4. **Use batch processing windows**: Run large jobs during off-peak hours to maximize throughput
 
 ## 7. Validate against the labeled training set
 Because the public `data/test_Q.csv` file has no answers, use `data/train_QA.csv` as a proxy leaderboard to measure progress locally:
