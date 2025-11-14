@@ -27,6 +27,24 @@ This guide ties the general KohakuRAG architecture to the specifics of the WattB
    - Parses the JSON response, fills in missing fields (e.g., `answer_value`), and writes out a Kaggle-ready CSV.
 3. Review the generated explanations/supporting materials to ensure the answers are grounded.
 
+## Validating against the training set
+Use the labeled `data/train_QA.csv` file to sanity-check your pipeline before submitting to Kaggle:
+
+```bash
+python scripts/wattbot_answer.py \
+    --db artifacts/wattbot.db \
+    --table-prefix wattbot \
+    --questions data/train_QA.csv \
+    --output artifacts/wattbot_train_preds.csv \
+    --model gpt-5.1 \
+    --top-k 6
+
+python scripts/wattbot_validate.py \
+    --pred artifacts/wattbot_train_preds.csv
+```
+
+The validation script compares your predictions to the ground truth using the official WattBot score recipe (0.75 × answer_value, 0.15 × ref_id, 0.10 × NA handling). Use `--show-errors 5` to print the lowest-scoring rows and inspect which answers, citations, or NA flags need attention.
+
 ## Configuring LLM and embeddings
 - Set `OPENAI_API_KEY` for production runs. The scripts automatically choose the OpenAI chat backend when the key is available; otherwise they fall back to a lightweight mock useful for unit tests.
 - Every environment uses `jinaai/jina-embeddings-v3` via `JinaEmbeddingModel`. Alternate encoders can implement the `EmbeddingModel` protocol, but we recommend sticking with Jina to keep embedding behavior aligned.
