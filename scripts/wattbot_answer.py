@@ -8,9 +8,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
 from kohakurag.llm import OpenAIChatModel
@@ -88,7 +85,9 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
     parser.add_argument("--table-prefix", default="wattbot")
     parser.add_argument("--questions", type=Path, default=Path("data/test_Q.csv"))
-    parser.add_argument("--output", type=Path, default=Path("artifacts/wattbot_answers.csv"))
+    parser.add_argument(
+        "--output", type=Path, default=Path("artifacts/wattbot_answers.csv")
+    )
     parser.add_argument("--model", default="gpt-4o-mini")
     parser.add_argument("--top-k", type=int, default=5)
     args = parser.parse_args()
@@ -98,9 +97,10 @@ def main() -> None:
     pipeline = RAGPipeline(store=store, chat_model=chat)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.questions.open(newline="", encoding="utf-8") as f_in, args.output.open(
-        "w", newline="", encoding="utf-8"
-    ) as f_out:
+    with (
+        args.questions.open(newline="", encoding="utf-8") as f_in,
+        args.output.open("w", newline="", encoding="utf-8") as f_out,
+    ):
         reader = csv.DictReader(f_in)
         columns = reader.fieldnames or [
             "id",

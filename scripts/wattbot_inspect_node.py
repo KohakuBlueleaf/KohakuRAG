@@ -2,22 +2,22 @@
 """Inspect and optionally update a node stored in the WattBot index."""
 
 import argparse
-import sys
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
 from kohakurag import StoredNode
 from kohakurag.datastore import KVaultNodeStore
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect a node from the WattBot index.")
+    parser = argparse.ArgumentParser(
+        description="Inspect a node from the WattBot index."
+    )
     parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
     parser.add_argument("--table-prefix", default="wattbot")
     parser.add_argument("--node-id", required=True)
-    parser.add_argument("--add-note", help="Append a developer note to the node metadata.")
+    parser.add_argument(
+        "--add-note", help="Append a developer note to the node metadata."
+    )
     args = parser.parse_args()
 
     store = KVaultNodeStore(args.db, table_prefix=args.table_prefix, dimensions=None)

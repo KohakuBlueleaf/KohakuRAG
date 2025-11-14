@@ -4,15 +4,10 @@
 import argparse
 import csv
 import sys
+import json
+import requests
 from pathlib import Path
 from urllib.parse import urlsplit
-
-import json
-
-import requests
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
 from kohakurag.pdf_utils import pdf_to_document_payload
 from kohakurag.parsers import payload_to_dict
@@ -69,7 +64,9 @@ def main() -> None:
     parser.add_argument("--pdf-dir", type=Path, default=Path("artifacts/raw_pdfs"))
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/docs"))
     parser.add_argument("--force-download", action="store_true")
-    parser.add_argument("--limit", type=int, default=0, help="Process only N documents (for testing).")
+    parser.add_argument(
+        "--limit", type=int, default=0, help="Process only N documents (for testing)."
+    )
     args = parser.parse_args()
 
     rows = load_metadata(args.metadata)
@@ -86,7 +83,9 @@ def main() -> None:
             continue
         if not is_pdf_url(url) and not has_pdf_mime(url):
             skipped += 1
-            print(f"[skip] {doc_id}: URL does not look like PDF ({url})", file=sys.stderr)
+            print(
+                f"[skip] {doc_id}: URL does not look like PDF ({url})", file=sys.stderr
+            )
             continue
         pdf_path = args.pdf_dir / f"{doc_id}.pdf"
         json_path = args.output_dir / f"{doc_id}.json"
@@ -118,7 +117,9 @@ def main() -> None:
         if args.limit and processed >= args.limit:
             break
 
-    print(f"Processed {processed} documents, skipped {skipped}. Structured docs saved under {args.output_dir}")
+    print(
+        f"Processed {processed} documents, skipped {skipped}. Structured docs saved under {args.output_dir}"
+    )
 
 
 if __name__ == "__main__":

@@ -25,7 +25,9 @@ def _extract_images(page) -> list[dict[str, Any]]:
     if not resources:
         return images
     resources = _resolve(resources)
-    xobject = resources.get("/XObject") if isinstance(resources, DictionaryObject) else None
+    xobject = (
+        resources.get("/XObject") if isinstance(resources, DictionaryObject) else None
+    )
     if xobject is None:
         return images
     xobject = _resolve(xobject)
@@ -118,7 +120,9 @@ def pdf_to_markdown(
     title: str,
     metadata: dict[str, Any],
 ) -> str:
-    payload = pdf_to_document_payload(pdf_path, doc_id=doc_id, title=title, metadata=metadata)
+    payload = pdf_to_document_payload(
+        pdf_path, doc_id=doc_id, title=title, metadata=metadata
+    )
     lines = [f"# {title}", ""]
     for section in payload.sections or []:
         lines.append(f"## {section.title}")

@@ -76,9 +76,7 @@ class JinaEmbeddingModel:
         self._batch_size = batch_size
         self._device = resolved_device
         self._dtype = (
-            torch.float16
-            if resolved_device.type in {"cuda", "mps"}
-            else torch.float32
+            torch.float16 if resolved_device.type in {"cuda", "mps"} else torch.float32
         )
         self._model: Any | None = None
         self._dimension: int | None = None

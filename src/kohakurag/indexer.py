@@ -32,7 +32,10 @@ def paragraph_payload_from_text(text: str) -> ParagraphPayload:
 
 
 def sections_from_text(document: DocumentPayload) -> list[SectionPayload]:
-    paragraphs = [paragraph_payload_from_text(paragraph) for paragraph in split_paragraphs(document.text)]
+    paragraphs = [
+        paragraph_payload_from_text(paragraph)
+        for paragraph in split_paragraphs(document.text)
+    ]
     return [
         SectionPayload(
             title=document.title,
@@ -112,7 +115,9 @@ class DocumentIndexer:
                     metadata=paragraph_meta,
                 )
                 section_node.children.append(paragraph_node)
-                sentences = paragraph.sentences or sentence_payloads_from_text(paragraph.text)
+                sentences = paragraph.sentences or sentence_payloads_from_text(
+                    paragraph.text
+                )
                 for sentence in sentences:
                     counters["sentence"] += 1
                     sentence_id = f"{paragraph_id}:s{counters['sentence']}"

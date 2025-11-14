@@ -98,7 +98,9 @@ class InMemoryNodeStore(HierarchicalNodeStore):
                 parent = self.get_node(parent.parent_id)
                 context.append(parent)
         if child_depth > 0:
-            self._collect_children(node, depth=child_depth, accumulator=context, seen=set())
+            self._collect_children(
+                node, depth=child_depth, accumulator=context, seen=set()
+            )
         unique = []
         seen_ids: set[str] = set()
         for item in context:
@@ -161,7 +163,10 @@ class KVaultNodeStore(HierarchicalNodeStore):
                 )
             dimensions = int(stored_meta.get("dimensions"))
         self._dimensions = int(dimensions)
-        if stored_meta and int(stored_meta.get("dimensions", self._dimensions)) != self._dimensions:
+        if (
+            stored_meta
+            and int(stored_meta.get("dimensions", self._dimensions)) != self._dimensions
+        ):
             raise ValueError(
                 f"Existing store was built with dimension {stored_meta['dimensions']}, "
                 f"but {self._dimensions} was requested."
@@ -221,7 +226,9 @@ class KVaultNodeStore(HierarchicalNodeStore):
             node = self.get_node(node_id)
             if kinds is not None and node.kind not in kinds:
                 continue
-            score = 1.0 - float(distance) if self._metric == "cosine" else -float(distance)
+            score = (
+                1.0 - float(distance) if self._metric == "cosine" else -float(distance)
+            )
             matches.append(RetrievalMatch(node=node, score=score))
         matches.sort(key=lambda item: item.score, reverse=True)
         return matches[:k]

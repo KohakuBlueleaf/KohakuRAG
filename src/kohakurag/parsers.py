@@ -27,7 +27,10 @@ def text_to_payload(
     paragraphs = [
         ParagraphPayload(
             text=paragraph,
-            sentences=[SentencePayload(text=sentence) for sentence in split_sentences(paragraph)],
+            sentences=[
+                SentencePayload(text=sentence)
+                for sentence in split_sentences(paragraph)
+            ],
         )
         for paragraph in split_paragraphs(text)
     ]
@@ -103,12 +106,15 @@ def markdown_to_payload(
     flush_paragraph()
     flush_section()
     if not sections:
-        sections = text_to_payload(
-            document_id=document_id,
-            title=title,
-            text=markdown_text,
-            metadata=metadata,
-        ).sections or []
+        sections = (
+            text_to_payload(
+                document_id=document_id,
+                title=title,
+                text=markdown_text,
+                metadata=metadata,
+            ).sections
+            or []
+        )
 
     return DocumentPayload(
         document_id=document_id,

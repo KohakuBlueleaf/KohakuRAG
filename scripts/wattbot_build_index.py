@@ -7,9 +7,6 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
 from kohakurag import (
     DocumentIndexer,
     dict_to_payload,
@@ -60,7 +57,9 @@ def iter_documents(
                 },
             )
         return
-    raise SystemExit("Provide --docs-dir with structured JSON files or use --use-citations.")
+    raise SystemExit(
+        "Provide --docs-dir with structured JSON files or use --use-citations."
+    )
 
 
 def main() -> None:
@@ -114,7 +113,9 @@ def main() -> None:
             )
         store.upsert_nodes(nodes)
         total_nodes += len(nodes)
-        print(f"  -> added {len(nodes)} nodes (running total {total_nodes})", flush=True)
+        print(
+            f"  -> added {len(nodes)} nodes (running total {total_nodes})", flush=True
+        )
 
     print(f"Indexed {len(documents)} documents with {total_nodes} nodes into {args.db}")
 

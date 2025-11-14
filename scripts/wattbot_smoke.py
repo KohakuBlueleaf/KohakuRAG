@@ -3,11 +3,7 @@
 
 import argparse
 import csv
-import sys
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 
 from kohakurag import DocumentIndexer, RAGPipeline, text_to_payload
 
@@ -62,7 +58,9 @@ def main() -> None:
     print("Response:\n", answer["response"])
     print("\nTop snippets:")
     for snippet in answer["snippets"][:3]:
-        print(f"- {snippet.document_title} ({snippet.node_id}) -> {snippet.text[:120]}...")
+        print(
+            f"- {snippet.document_title} ({snippet.node_id}) -> {snippet.text[:120]}..."
+        )
 
 
 if __name__ == "__main__":

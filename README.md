@@ -11,45 +11,34 @@ KohakuRAG is a general-purpose Retrieval-Augmented Generation (RAG) framework. I
 
 
 # WattBot 2025 Workflow (Example Integration)
- ```bash
- # 1. Download PDFs and convert them into structured JSON
- python scripts/wattbot_fetch_docs.py \
-   --metadata data/metadata.csv \
-   --pdf-dir artifacts/raw_pdfs \
-   --output-dir artifacts/docs
- 
+```bash
+# 1. Download PDFs and convert them into structured JSON
+python scripts/wattbot_fetch_docs.py --metadata data/metadata.csv --pdf-dir artifacts/raw_pdfs --output-dir artifacts/docs
+
 # 2. Build the KohakuVault index with hierarchical nodes + embeddings
- python scripts/wattbot_build_index.py \
-   --metadata data/metadata.csv \
-   --docs-dir artifacts/docs \
-   --db artifacts/wattbot.db
- 
- # 3. Inspect the corpus
- python scripts/wattbot_stats.py --db artifacts/wattbot.db
- python scripts/wattbot_demo_query.py \
-   --db artifacts/wattbot.db \
-   --question "How much water does GPT-3 training consume?"
- 
- # 4. Answer Kaggle questions with OpenAI
- export OPENAI_API_KEY=...  # set once
- python scripts/wattbot_answer.py \
-   --db artifacts/wattbot.db \
-   --questions data/test_Q.csv \
-   --output artifacts/wattbot_answers.csv
- ```
- (See `docs/usage.md` for more scenarios: node inspection, dry runs with `--limit`, fallback to citation-only indexing, etc.)
- 
+python scripts/wattbot_build_index.py --metadata data/metadata.csv --docs-dir artifacts/docs --db artifacts/wattbot.db
+
+# 3. Inspect the corpus
+python scripts/wattbot_stats.py --db artifacts/wattbot.db
+python scripts/wattbot_demo_query.py --db artifacts/wattbot.db --question "How much water does GPT-3 training consume?"
+
+# 4. Answer Kaggle questions with OpenAI
+export OPENAI_API_KEY=...  # set once
+python scripts/wattbot_answer.py --db artifacts/wattbot.db --questions data/test_Q.csv --output artifacts/wattbot_answers.csv
+```
+(See `docs/usage.md` for more scenarios: node inspection, dry runs with `--limit`, fallback to citation-only indexing, etc.)
+
 ## Architecture highlights
- 1. **Parsing** – `pdf_to_document_payload` extracts per-page text and image placeholders; `markdown_to_payload` and `text_to_payload` offer alternative entry points. Every payload carries `metadata` (document ids, URLs, years, reference ids).
- 2. **Indexing** – `DocumentIndexer` walks the tree, embeds sentence leaves via `JinaEmbeddingModel`, averages parent embeddings, and emits `StoredNode` objects.
- 3. **Storage** – `KVaultNodeStore` writes node blobs into KohakuVault’s key-value table and stage embeddings in sqlite-vec (`VectorKVault`). Retrieval is just brute-force cosine search on the stored vectors.
- 4. **Retrieval + LLM** – `RAGPipeline` plans queries, retrieves top-k nodes (with parent/child context expansion), and prompts a chat model (mock or OpenAI) to produce structured answers.
- 
+1. **Parsing** – `pdf_to_document_payload` extracts per-page text and image placeholders; `markdown_to_payload` and `text_to_payload` offer alternative entry points. Every payload carries `metadata` (document ids, URLs, years, reference ids).
+2. **Indexing** – `DocumentIndexer` walks the tree, embeds sentence leaves via `JinaEmbeddingModel`, averages parent embeddings, and emits `StoredNode` objects.
+3. **Storage** – `KVaultNodeStore` writes node blobs into KohakuVault’s key-value table and stage embeddings in sqlite-vec (`VectorKVault`). Retrieval is just brute-force cosine search on the stored vectors.
+4. **Retrieval + LLM** – `RAGPipeline` plans queries, retrieves top-k nodes (with parent/child context expansion), and prompts a chat model (mock or OpenAI) to produce structured answers.
+
 ## Development notes
- - Python 3.10+ (repo uses PEP 563-style `list[str]`/`dict[str, Any]` annotations).
- - Dependencies: `torch`, `transformers`, `kohakuvault`, `pypdf`, `requests`, `openai`.
- - Jina embeddings are downloaded on first run; set `HF_HOME` if you need a custom cache path.
- - Use `.venv` (or another virtual environment) and follow `docs/usage.md` to reproduce the pipeline locally.
- 
+- Python 3.10+ (repo uses PEP 563-style `list[str]`/`dict[str, Any]` annotations).
+- Dependencies: `torch`, `transformers`, `kohakuvault`, `pypdf`, `requests`, `openai`.
+- Jina embeddings are downloaded on first run; set `HF_HOME` if you need a custom cache path.
+- Use `.venv` (or another virtual environment) and follow `docs/usage.md` to reproduce the pipeline locally.
+
 ## License
 Apache-2.0 (see `LICENSE`).
