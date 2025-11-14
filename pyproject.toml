@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kohaku-rag"
+version = "0.0.1"
+description = "Simple RAG system for WattBot 2025"
+authors = [
+    { name = "Shih-Ying Yeh(KohakuBlueLeaf)", email = "apolloyeh0123@gmail.com" },
+]
+license = { text = "Apache-2.0" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.3",
+    "torch",
+    "transformers",
+    "pypdf>=6.2.0",
+    "requests>=2.31.0",
+    "kohakuvault>=0.7.1",
+    "openai>=2.8.0",
+]
+urls = { "Homepage" = "https://github.com/KohakuBlueleaf/KohakuRAG" }
+
+[project.optional-dependencies]
+dev = []
+llm = ["openai>=1.0.0"]
+
+
+[tool.setuptools]
+package-dir = {"" = "src"}
