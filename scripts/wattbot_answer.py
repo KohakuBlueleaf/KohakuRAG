@@ -28,7 +28,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
-from kohakurag.embeddings import JinaEmbeddingModel
+from kohakurag.embeddings import JinaEmbeddingModel, EmbeddingModel
 from kohakurag.llm import OpenAIChatModel
 
 
@@ -184,9 +184,21 @@ def normalize_answer_value(raw: str, question: str) -> str:
 # Pre-load the Jina model once and share across all workers to save memory
 # ============================================================================
 
-jina_emb = JinaEmbeddingModel()
-jina_emb._ensure_model()  # Eager load to avoid thread contention
-GLOBAL_EMBEDDER = jina_emb
+class ThreadSafeEmbeddingModel(EmbeddingModel):
+    def __init__(self):
+        self._embedder = JinaEmbeddingModel()
+        self._embedder._ensure_model()
+        self.lock = threading.Lock()
+
+    @property
+    def dimension(self):
+        return self._embedder.dimension
+
+    def embed(self, text: str):
+        with self.lock:
+            return self._embedder.embed([text])
+
+GLOBAL_EMBEDDER = ThreadSafeEmbeddingModel()
 
 
 # ============================================================================
