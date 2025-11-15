@@ -140,32 +140,9 @@ def normalize_answer_value(raw: str, question: str) -> str:
     return value
 
 
-class _SharedEmbedder(EmbeddingModel):
-    """Lazily builds a single Jina embedder and guards concurrent calls."""
-
-    def __init__(self) -> None:
-        self._embedder: EmbeddingModel | None = None
-        self._init_lock = threading.Lock()
-        self._embed_lock = threading.Lock()
-
-    def _ensure_embedder(self) -> EmbeddingModel:
-        if self._embedder is None:
-            with self._init_lock:
-                if self._embedder is None:
-                    self._embedder = JinaEmbeddingModel()
-        return self._embedder
-
-    @property
-    def dimension(self) -> int:
-        return self._ensure_embedder().dimension
-
-    def embed(self, texts: Sequence[str]):
-        embedder = self._ensure_embedder()
-        with self._embed_lock:
-            return embedder.embed(texts)
-
-
-GLOBAL_EMBEDDER = _SharedEmbedder()
+jina_emb = JinaEmbeddingModel()
+jina_emb._ensure_model()
+GLOBAL_EMBEDDER = jina_emb
 
 
 class LLMQueryPlanner:

@@ -1,6 +1,7 @@
 """Chat model integrations (e.g., OpenAI)."""
 
 import os
+import random
 import re
 import time
 from pathlib import Path
@@ -106,10 +107,13 @@ class OpenAIChatModel(ChatModel):
 
                 if retry_after is not None:
                     # Use the server-recommended wait time with a small buffer
-                    wait_time = retry_after + 0.1
+                    wait_time = retry_after + 1
                 else:
                     # Exponential backoff: 1s, 2s, 4s, 8s, 16s...
                     wait_time = self._base_retry_delay * (2**attempt)
+                # Random Exponential backoff to avoid thundering herds
+                factor = random.random() * 0.5 + 0.75
+                wait_time = wait_time * factor
 
                 print(
                     f"Rate limit hit (attempt {attempt + 1}/{self._max_retries + 1}). "
