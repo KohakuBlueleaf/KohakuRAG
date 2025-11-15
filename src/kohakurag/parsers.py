@@ -1,4 +1,8 @@
-"""Helpers for converting various sources into DocumentPayloads."""
+"""Convert text/Markdown/JSON into structured DocumentPayloads.
+
+These parsers provide the entry point for ingesting different document formats
+into the hierarchical structure KohakuRAG expects.
+"""
 
 import re
 from dataclasses import asdict
@@ -22,6 +26,7 @@ def text_to_payload(
     text: str,
     metadata: dict[str, Any],
 ) -> DocumentPayload:
+    """Convert plain text into hierarchical payload using heuristic segmentation."""
     paragraphs = [
         ParagraphPayload(
             text=paragraph,
@@ -55,6 +60,13 @@ def markdown_to_payload(
     markdown_text: str,
     metadata: dict[str, Any],
 ) -> DocumentPayload:
+    """Parse Markdown using # headings as section boundaries.
+
+    Strategy:
+    - Lines starting with # create new sections
+    - Blank lines separate paragraphs
+    - Falls back to plain text parser if no headings found
+    """
     sections: list[SectionPayload] = []
     current_paragraph_lines: list[str] = []
     current_title = title
@@ -62,10 +74,13 @@ def markdown_to_payload(
     section_paragraphs: list[ParagraphPayload] = []
 
     def flush_paragraph() -> None:
+        """Save accumulated lines as a paragraph."""
         if not current_paragraph_lines:
             return
+
         paragraph_text = "\n".join(current_paragraph_lines).strip()
         current_paragraph_lines.clear()
+
         sentences = [
             SentencePayload(text=sentence)
             for sentence in split_sentences(paragraph_text)
@@ -78,6 +93,7 @@ def markdown_to_payload(
         )
 
     def flush_section() -> None:
+        """Save accumulated paragraphs as a section."""
         if section_paragraphs:
             sections.append(
                 SectionPayload(
@@ -88,21 +104,31 @@ def markdown_to_payload(
             )
             section_paragraphs.clear()
 
+    # Parse line by line
     for line in markdown_text.splitlines():
         heading_match = HEADING_RE.match(line)
+
         if heading_match:
+            # Start new section at each heading
             flush_paragraph()
             flush_section()
             current_title = heading_match.group(2).strip()
             current_metadata = {"level": len(heading_match.group(1))}
             continue
+
         if not line.strip():
+            # Blank line ends paragraph
             flush_paragraph()
             continue
+
+        # Accumulate content line
         current_paragraph_lines.append(line)
 
+    # Flush final paragraph/section
     flush_paragraph()
     flush_section()
+
+    # Fallback if no headings found
     if not sections:
         sections = (
             text_to_payload(
@@ -124,14 +150,19 @@ def markdown_to_payload(
 
 
 def payload_to_dict(payload: DocumentPayload) -> dict:
+    """Serialize DocumentPayload to JSON-compatible dict."""
     return asdict(payload)
 
 
 def dict_to_payload(data: dict[str, Any]) -> DocumentPayload:
+    """Deserialize dict (from JSON) back to DocumentPayload."""
     sections_data = data.get("sections") or []
     sections: list[SectionPayload] = []
+
+    # Rebuild nested structure
     for section in sections_data:
         paragraphs: list[ParagraphPayload] = []
+
         for paragraph in section.get("paragraphs", []):
             sentences = [
                 SentencePayload(
@@ -140,6 +171,7 @@ def dict_to_payload(data: dict[str, Any]) -> DocumentPayload:
                 )
                 for sentence in paragraph.get("sentences", []) or []
             ]
+
             paragraphs.append(
                 ParagraphPayload(
                     text=paragraph.get("text", ""),
@@ -147,6 +179,7 @@ def dict_to_payload(data: dict[str, Any]) -> DocumentPayload:
                     metadata=paragraph.get("metadata", {}),
                 )
             )
+
         sections.append(
             SectionPayload(
                 title=section.get("title", ""),
@@ -154,6 +187,7 @@ def dict_to_payload(data: dict[str, Any]) -> DocumentPayload:
                 metadata=section.get("metadata", {}),
             )
         )
+
     return DocumentPayload(
         document_id=data["document_id"],
         title=data.get("title", data["document_id"]),

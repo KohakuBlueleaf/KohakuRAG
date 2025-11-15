@@ -12,16 +12,22 @@ from .pipeline import ChatModel
 
 
 def _load_dotenv(path: str | Path = ".env") -> dict[str, str]:
+    """Load environment variables from a .env file."""
     env_path = Path(path)
     if not env_path.exists():
         return {}
+
     env_vars: dict[str, str] = {}
     for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
+
+        # Skip empty lines and comments
         if not line or line.startswith("#") or "=" not in line:
             continue
+
         key, value = line.split("=", 1)
         env_vars[key.strip()] = value.strip().strip('"').strip("'")
+
     return env_vars
 
 
@@ -38,12 +44,25 @@ class OpenAIChatModel(ChatModel):
         max_retries: int = 5,
         base_retry_delay: float = 3.0,
     ) -> None:
+        """Initialize OpenAI chat model with automatic rate limit retry.
+
+        Args:
+            model: OpenAI model identifier (e.g., "gpt-4o-mini")
+            api_key: OpenAI API key (reads from env if not provided)
+            organization: OpenAI organization ID (optional)
+            system_prompt: Default system message for all completions
+            max_retries: Maximum retry attempts on rate limit errors
+            base_retry_delay: Base delay for exponential backoff (seconds)
+        """
+        # Try multiple sources for API key
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
             dotenv_vars = _load_dotenv()
             key = dotenv_vars.get("OPENAI_API_KEY")
+
         if not key:
             raise ValueError("OPENAI_API_KEY is required for OpenAIChatModel.")
+
         self._system_prompt = system_prompt or "You are a helpful assistant."
         self._client = OpenAI(api_key=key, organization=organization)
         self._model = model
@@ -71,6 +90,16 @@ class OpenAIChatModel(ChatModel):
         return None
 
     def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+        """Execute chat completion with automatic rate limit retry.
+
+        Uses intelligent retry strategy:
+        1. Parse server-recommended delay from error message
+        2. Fall back to exponential backoff if no delay specified
+        3. Apply jitter to avoid thundering herd
+
+        Returns:
+            Model's text response
+        """
         system = system_prompt or self._system_prompt
 
         for attempt in range(self._max_retries + 1):
@@ -86,28 +115,28 @@ class OpenAIChatModel(ChatModel):
                 return choice.message.content or ""
 
             except Exception as e:
-                # Check if it's a rate limit error
+                # Check if it's a rate limit error (by type or message)
                 is_rate_limit = isinstance(e, RateLimitError) or (
                     "rate" in str(e).lower() and "limit" in str(e).lower()
                 )
 
                 if not is_rate_limit or attempt >= self._max_retries:
-                    # Not a rate limit error or out of retries
-                    raise
+                    raise  # Not a rate limit or exhausted retries
 
-                # Parse the error message to get the recommended wait time
+                # Calculate wait time: server-recommended or exponential backoff
                 error_msg = str(e)
                 retry_after = self._parse_retry_after(error_msg)
 
                 if retry_after is not None:
-                    # Use the server-recommended wait time with a small buffer
-                    wait_time = retry_after + 1
+                    # Server told us exactly how long to wait
+                    wait_time = retry_after + 1  # Add 1s buffer
                 else:
-                    # Exponential backoff: 1s, 2s, 4s, 8s, 16s...
+                    # Exponential backoff: 3s, 6s, 12s, 24s, 48s...
                     wait_time = self._base_retry_delay * (2**attempt)
-                # Random Exponential backoff to avoid thundering herds
-                factor = random.random() * 0.5 + 0.75
-                wait_time = wait_time * factor
+
+                # Add jitter to prevent thundering herd (75-125% of wait_time)
+                jitter_factor = random.random() * 0.5 + 0.75
+                wait_time = wait_time * jitter_factor
 
                 print(
                     f"Rate limit hit (attempt {attempt + 1}/{self._max_retries + 1}). "
@@ -115,5 +144,4 @@ class OpenAIChatModel(ChatModel):
                 )
                 time.sleep(wait_time)
 
-        # This should never be reached due to the raise in the loop
         raise RuntimeError("Unexpected end of retry loop")

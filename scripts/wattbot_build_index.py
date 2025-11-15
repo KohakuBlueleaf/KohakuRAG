@@ -3,7 +3,6 @@
 import argparse
 import csv
 import json
-import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -57,12 +56,19 @@ def iter_documents(
                 },
             )
         return
+
     raise SystemExit(
         "Provide --docs-dir with structured JSON files or use --use-citations."
     )
 
 
+# ============================================================================
+# MAIN INDEXING PIPELINE
+# ============================================================================
+
+
 def main() -> None:
+    """Build the hierarchical index from documents."""
     parser = argparse.ArgumentParser(description="Build WattBot KohakuVault index.")
     parser.add_argument("--metadata", type=Path, default=Path("data/metadata.csv"))
     parser.add_argument(
@@ -89,28 +95,39 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Load documents to index
     metadata = load_metadata(args.metadata)
     documents = list(iter_documents(args.docs_dir, metadata, args.use_citations))
     total_docs = len(documents)
+
     if not total_docs:
         raise SystemExit("No documents found to index.")
 
+    # Setup indexer and datastore
     args.db.parent.mkdir(parents=True, exist_ok=True)
     indexer = DocumentIndexer()
-    store: KVaultNodeStore | None = None
+    store: KVaultNodeStore | None = None  # Lazy init after first document
     total_nodes = 0
+
+    # Index each document and upsert nodes
     for idx, payload in enumerate(documents, start=1):
         print(f"[{idx}/{total_docs}] indexing {payload.document_id}...", flush=True)
+
+        # Build hierarchical tree and compute embeddings
         nodes = indexer.index(payload)
         if not nodes:
             print(f"  -> no nodes generated, skipping.", flush=True)
             continue
+
+        # Initialize store on first document (infer dimensions)
         if store is None:
             store = KVaultNodeStore(
                 args.db,
                 table_prefix=args.table_prefix,
                 dimensions=nodes[0].embedding.shape[0],
             )
+
+        # Persist nodes to SQLite + sqlite-vec
         store.upsert_nodes(nodes)
         total_nodes += len(nodes)
         print(

@@ -23,6 +23,7 @@ class QuestionScore:
 
     @property
     def weighted(self) -> float:
+        """Combined score using official WattBot weights."""
         return (
             VALUE_WEIGHT * self.value_score
             + REF_WEIGHT * self.ref_score
@@ -30,7 +31,13 @@ class QuestionScore:
         )
 
 
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+
 def _is_blank(value: str | None) -> bool:
+    """Check if a value should be treated as blank/NA."""
     if value is None:
         return True
     stripped = value.strip()
@@ -38,20 +45,25 @@ def _is_blank(value: str | None) -> bool:
 
 
 def _load_rows(path: Path) -> dict[str, dict[str, str]]:
+    """Load CSV and index by question ID."""
     with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         rows: dict[str, dict[str, str]] = {}
+
         for row in reader:
             qid = row.get("id")
             if not qid:
                 raise ValueError(f"Row missing 'id' column: {row}")
             rows[qid] = row
+
         if not rows:
             raise ValueError(f"No rows found in {path}")
+
         return rows
 
 
 def _parse_numeric(value: str) -> float | None:
+    """Try to parse value as a number."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -59,6 +71,7 @@ def _parse_numeric(value: str) -> float | None:
 
 
 def _parse_range(value: str) -> tuple[float, float] | None:
+    """Parse [lower,upper] JSON range."""
     try:
         parsed = json.loads(value)
     except json.JSONDecodeError:
@@ -73,16 +86,26 @@ def _parse_range(value: str) -> tuple[float, float] | None:
 
 
 def _normalize_text(value: str) -> str:
+    """Normalize text for categorical comparison (lowercase, whitespace collapsed)."""
     return " ".join(value.strip().lower().split())
 
 
+# ============================================================================
+# SCORING FUNCTIONS
+# ============================================================================
+
+
 def _score_answer_value(true_value: str, pred_value: str) -> float:
+    """Score answer_value with numeric tolerance or exact text match."""
     print(true_value, pred_value)
+
+    # Both blank or both non-blank
     if _is_blank(true_value):
         return 1.0 if _is_blank(pred_value) else 0.0
     if _is_blank(pred_value):
         return 0.0
 
+    # Range matching: [lower,upper]
     true_range = _parse_range(true_value)
     pred_range = _parse_range(pred_value)
     if true_range is not None:
@@ -92,23 +115,30 @@ def _score_answer_value(true_value: str, pred_value: str) -> float:
             true_range[1], pred_range[1]
         )
 
+    # Numeric matching with tolerance
     true_num = _parse_numeric(true_value)
     pred_num = _parse_numeric(pred_value)
     if true_num is not None and pred_num is not None:
         return _match_numeric(true_num, pred_num)
 
     if true_num is None and pred_num is not None:
-        return 0.0
+        return 0.0  # Type mismatch
 
+    # Categorical matching (exact text)
     return 1.0 if _normalize_text(true_value) == _normalize_text(pred_value) else 0.0
 
 
 def _match_numeric(target: float, candidate: float) -> float:
+    """Check if numbers match within 0.1% tolerance."""
     tolerance = max(abs(target) * 0.001, 1e-9)
     return 1.0 if abs(target - candidate) <= tolerance else 0.0
 
 
 def _parse_ref_ids(value: str) -> set[str]:
+    """Parse ref_id field into set of document IDs.
+
+    Handles formats: ['doc1','doc2'] or [doc1,doc2] or doc1,doc2
+    """
     if _is_blank(value):
         return set()
     try:
@@ -125,6 +155,7 @@ def _parse_ref_ids(value: str) -> set[str]:
 
 
 def _score_ref_ids(true_value: str, pred_value: str) -> float:
+    """Compute Jaccard similarity between reference ID sets."""
     truth = _parse_ref_ids(true_value)
     pred = _parse_ref_ids(pred_value)
     if not truth and not pred:
@@ -136,8 +167,11 @@ def _score_ref_ids(true_value: str, pred_value: str) -> float:
 
 
 def _score_na_row(true_row: dict[str, str], pred_row: dict[str, str]) -> float:
+    """Check if NA questions are handled correctly (all blank or all non-blank)."""
     if not _is_blank(true_row.get("answer_value")):
-        return 1.0
+        return 1.0  # Not an NA question
+
+    # NA question: prediction should be all blank
     required = (
         pred_row.get("answer_value"),
         pred_row.get("ref_id"),
@@ -145,14 +179,22 @@ def _score_na_row(true_row: dict[str, str], pred_row: dict[str, str]) -> float:
     return 1.0 if all(_is_blank(value) for value in required) else 0.0
 
 
+# ============================================================================
+# EVALUATION
+# ============================================================================
+
+
 def evaluate(
     truth_path: Path, pred_path: Path
 ) -> tuple[list[QuestionScore], set[str], set[str]]:
+    """Compute per-question scores and identify missing/extra predictions."""
     truth_rows = _load_rows(truth_path)
     pred_rows = _load_rows(pred_path)
 
     missing_predictions = set(truth_rows) - set(pred_rows)
     extra_predictions = set(pred_rows) - set(truth_rows)
+
+    # Score each question
     scores: list[QuestionScore] = []
     for qid, truth in truth_rows.items():
         pred = pred_rows.get(qid, {})
@@ -168,10 +210,17 @@ def evaluate(
                 na_score=_score_na_row(truth, pred) if pred else 0.0,
             )
         )
+
     return scores, missing_predictions, extra_predictions
 
 
+# ============================================================================
+# MAIN VALIDATION
+# ============================================================================
+
+
 def main() -> None:
+    """Run validation and print summary stats."""
     parser = argparse.ArgumentParser(
         description="Validate WattBot predictions against train_QA.csv."
     )
@@ -195,15 +244,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Evaluate predictions
     scores, missing, extra = evaluate(args.truth, args.pred)
 
+    # Compute aggregate metrics
     total = len(scores)
     avg_value = sum(item.value_score for item in scores) / total
     avg_ref = sum(item.ref_score for item in scores) / total
     avg_na = sum(item.na_score for item in scores) / total
     overall = VALUE_WEIGHT * avg_value + REF_WEIGHT * avg_ref + NA_WEIGHT * avg_na
 
+    # Print summary
     print(f"Questions evaluated: {total}")
+
     if missing:
         preview = ", ".join(sorted(missing)[:5])
         suffix = "..." if len(missing) > 5 else ""
@@ -212,12 +265,14 @@ def main() -> None:
         preview = ", ".join(sorted(extra)[:5])
         suffix = "..." if len(extra) > 5 else ""
         print(f"Ignored {len(extra)} extra prediction id(s): {preview}{suffix}")
+
     print(
         "Component scores: "
         f"value={avg_value:.4f}, ref={avg_ref:.4f}, is_NA={avg_na:.4f}"
     )
     print(f"WattBot score: {overall:.4f}")
 
+    # Show worst predictions for debugging
     if args.show_errors > 0:
         ranked = sorted(scores, key=lambda item: item.weighted)
         print("\nLowest-scoring questions:")

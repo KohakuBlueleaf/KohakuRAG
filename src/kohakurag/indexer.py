@@ -18,10 +18,12 @@ from .types import (
 
 
 def sentence_payloads_from_text(text: str) -> list[SentencePayload]:
+    """Split text into sentence payloads using heuristic rules."""
     return [SentencePayload(text=s) for s in split_sentences(text)]
 
 
 def paragraph_payload_from_text(text: str) -> ParagraphPayload:
+    """Convert plain text into a paragraph with sentence segmentation."""
     return ParagraphPayload(
         text=text,
         sentences=sentence_payloads_from_text(text),
@@ -29,6 +31,7 @@ def paragraph_payload_from_text(text: str) -> ParagraphPayload:
 
 
 def sections_from_text(document: DocumentPayload) -> list[SectionPayload]:
+    """Auto-generate a single section from unstructured document text."""
     paragraphs = [
         paragraph_payload_from_text(paragraph)
         for paragraph in split_paragraphs(document.text)
@@ -49,16 +52,28 @@ class DocumentIndexer:
         self._embedding_model = embedding_model or JinaEmbeddingModel()
 
     def index(self, document: DocumentPayload) -> list[StoredNode]:
+        """Build hierarchical tree, compute embeddings, and return storable nodes."""
         root = self._build_tree(document)
         self._embed_tree(root)
         return [self._to_stored(node) for node in self._flatten(root)]
 
     def _build_tree(self, document: DocumentPayload) -> TreeNode:
+        """Build document → section → paragraph → sentence hierarchy.
+
+        Node IDs follow pattern: doc:sec1:p2:s3 for easy parent lookup.
+        """
+        # Track global counters for generating unique IDs
         counters = {"section": 0, "paragraph": 0, "sentence": 0}
+
+        # Use provided structure or generate from plain text
         sections = document.sections or sections_from_text(document)
+
+        # Reconstruct full document text if needed
         document_text = document.text or "\n\n".join(
             paragraph.text for section in sections for paragraph in section.paragraphs
         )
+
+        # Build root document node
         root_metadata = dict(document.metadata)
         root_metadata.setdefault("document_id", document.document_id)
         root_metadata.setdefault("document_title", document.title)
@@ -70,6 +85,8 @@ class DocumentIndexer:
             text=document_text,
             metadata=root_metadata,
         )
+
+        # Build section nodes
         for section in sections:
             counters["section"] += 1
             section_id = f"{document.document_id}:sec{counters['section']}"
@@ -90,6 +107,8 @@ class DocumentIndexer:
                 metadata=section_meta,
             )
             root.children.append(section_node)
+
+            # Build paragraph nodes within this section
             for paragraph in section.paragraphs:
                 counters["paragraph"] += 1
                 paragraph_id = f"{section_id}:p{counters['paragraph']}"
@@ -112,6 +131,8 @@ class DocumentIndexer:
                     metadata=paragraph_meta,
                 )
                 section_node.children.append(paragraph_node)
+
+                # Build sentence nodes within this paragraph
                 sentences = paragraph.sentences or sentence_payloads_from_text(
                     paragraph.text
                 )
@@ -137,33 +158,46 @@ class DocumentIndexer:
                         metadata=sentence_meta,
                     )
                     paragraph_node.children.append(sentence_node)
+
         return root
 
     def _embed_tree(self, root: TreeNode) -> None:
+        """Embed leaf nodes and propagate upward to parents."""
+        # Batch-embed all leaf nodes (sentences) for efficiency
         leaves = [node for node in self._flatten(root) if not node.children]
         if leaves:
             embeddings = self._embedding_model.embed([leaf.text for leaf in leaves])
             for leaf, vector in zip(leaves, embeddings, strict=True):
                 leaf.embedding = vector
+
+        # Recursively compute parent embeddings from children
         self._propagate_embeddings(root)
 
     def _propagate_embeddings(self, node: TreeNode) -> np.ndarray:
+        """Recursively compute parent embeddings as average of children."""
         if node.embedding is not None:
-            return node.embedding
+            return node.embedding  # Already embedded (leaf node)
+
+        # Recurse to children first
         child_vectors = [self._propagate_embeddings(child) for child in node.children]
         if not child_vectors:
             raise ValueError(f"Node {node.node_id} is missing an embedding.")
+
+        # Parent embedding = normalized average of children
         node.embedding = average_embeddings(child_vectors)
         return node.embedding
 
     def _flatten(self, node: TreeNode) -> Iterable[TreeNode]:
+        """Depth-first traversal of tree."""
         yield node
         for child in node.children:
             yield from self._flatten(child)
 
     def _to_stored(self, node: TreeNode) -> StoredNode:
+        """Convert tree node to storable format."""
         if node.embedding is None:
             raise ValueError(f"Node {node.node_id} is missing an embedding.")
+
         return StoredNode(
             node_id=node.node_id,
             parent_id=node.parent_id,

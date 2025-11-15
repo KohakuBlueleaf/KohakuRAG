@@ -1,4 +1,17 @@
-"""Query the WattBot index and show retrieved snippets."""
+"""Query the WattBot index and show retrieved snippets.
+
+This script demonstrates RAG retrieval without LLM generation:
+- Takes a question as input
+- Retrieves top-k matching nodes from the index
+- Shows hierarchical context expansion
+- Displays results in formatted tables
+
+Usage:
+    python scripts/wattbot_demo_query.py \\
+        --db artifacts/wattbot.db \\
+        --question "How much water does GPT-3 training consume?" \\
+        --top-k 10
+"""
 
 import argparse
 import textwrap
@@ -9,8 +22,13 @@ from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
 
 
+# ============================================================================
+# FORMATTING HELPERS
+# ============================================================================
+
+
 def _format_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
-    """Return a simple aligned table for terminal output."""
+    """Format data as aligned ASCII table for terminal."""
     normalized_rows: list[list[str]] = [
         [str(cell) if cell is not None else "-" for cell in row] for row in rows
     ]
@@ -33,12 +51,15 @@ def _format_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
 
 
 def _preview_text(text: str, width: int = 80) -> str:
-    """Return a single-line preview of snippet text."""
+    """Truncate text to single line for table display."""
     return textwrap.shorten(" ".join(text.split()), width=width, placeholder="…")
 
 
 def _compact_node_id(node_id: str, doc_id: str | None) -> str:
-    """Drop the document prefix from a node id when possible."""
+    """Strip document prefix from node ID for readability.
+
+    Example: amazon2023:sec1:p5:s12 → sec1:p5:s12
+    """
     if doc_id:
         prefix = str(doc_id)
         if not node_id.startswith(prefix):
@@ -50,7 +71,13 @@ def _compact_node_id(node_id: str, doc_id: str | None) -> str:
     return node_id
 
 
+# ============================================================================
+# MAIN QUERY DEMO
+# ============================================================================
+
+
 def main() -> None:
+    """Run a demo query and display results."""
     parser = argparse.ArgumentParser(description="Query the WattBot KohakuVault index.")
     parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
     parser.add_argument("--table-prefix", default="wattbot")
@@ -58,15 +85,20 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=5)
     args = parser.parse_args()
 
+    # Load datastore and create pipeline
     store = KVaultNodeStore(
         args.db,
         table_prefix=args.table_prefix,
         dimensions=None,
     )
     pipeline = RAGPipeline(store=store)
+
+    # Execute retrieval
     result = pipeline.retrieve(args.question, top_k=args.top_k)
 
     print(f"Question: {args.question}")
+
+    # Format match results
     match_rows = []
     for idx, match in enumerate(result.matches, start=1):
         meta = match.node.metadata
@@ -92,6 +124,7 @@ def main() -> None:
     else:
         print("No matches found.")
 
+    # Format expanded context snippets
     snippet_rows = []
     for snippet in result.snippets[: args.top_k]:
         doc_id = snippet.metadata.get("document_id")

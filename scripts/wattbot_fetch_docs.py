@@ -69,28 +69,38 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Load document metadata
     rows = load_metadata(args.metadata)
     processed = 0
     skipped = 0
 
+    # Process each document
     for row in rows:
         doc_id = row["id"]
         title = row.get("title") or doc_id
         url = clean_url(row.get("url") or "")
+
+        # Validate URL
         if not url:
             skipped += 1
             print(f"[skip] {doc_id}: missing URL", file=sys.stderr)
             continue
+
         if not is_pdf_url(url) and not has_pdf_mime(url):
             skipped += 1
             print(
                 f"[skip] {doc_id}: URL does not look like PDF ({url})", file=sys.stderr
             )
             continue
+
         pdf_path = args.pdf_dir / f"{doc_id}.pdf"
         json_path = args.output_dir / f"{doc_id}.json"
+
         try:
+            # Download PDF
             download_pdf(url, pdf_path, force=args.force_download)
+
+            # Parse PDF into structured payload
             payload = pdf_to_document_payload(
                 pdf_path,
                 doc_id=doc_id,
@@ -101,24 +111,31 @@ def main() -> None:
                     "year": row.get("year"),
                 },
             )
+
+            # Save as JSON
             json_path.parent.mkdir(parents=True, exist_ok=True)
             json_path.write_text(
                 json.dumps(payload_to_dict(payload), ensure_ascii=False),
                 encoding="utf-8",
             )
+
             processed += 1
             print(f"[ok] {doc_id} -> {json_path}")
+
         except requests.HTTPError as err:
             skipped += 1
             print(f"[error] {doc_id}: download failed ({err})", file=sys.stderr)
         except Exception as exc:
             skipped += 1
             print(f"[error] {doc_id}: conversion failed ({exc})", file=sys.stderr)
+
+        # Respect limit for testing
         if args.limit and processed >= args.limit:
             break
 
     print(
-        f"Processed {processed} documents, skipped {skipped}. Structured docs saved under {args.output_dir}"
+        f"Processed {processed} documents, skipped {skipped}. "
+        f"Structured docs saved under {args.output_dir}"
     )
 
 

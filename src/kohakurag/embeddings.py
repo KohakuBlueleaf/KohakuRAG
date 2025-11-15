@@ -19,8 +19,9 @@ class EmbeddingModel(Protocol):
 
 
 def _normalize(vectors: np.ndarray) -> np.ndarray:
+    """Normalize vectors to unit length, handling zero vectors."""
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
+    norms[norms == 0] = 1.0  # Avoid division by zero
     return vectors / norms
 
 
@@ -28,16 +29,20 @@ def average_embeddings(child_vectors: Sequence[np.ndarray]) -> np.ndarray:
     """Compute the normalized mean vector for parent nodes."""
     if not child_vectors:
         raise ValueError("average_embeddings requires at least one child vector.")
+
     stacked = np.vstack(child_vectors)
     return _normalize(np.mean(stacked, axis=0, keepdims=True))[0]
 
 
 def _detect_device() -> Any:
+    """Auto-detect best available device (CUDA > MPS > CPU)."""
     if torch.cuda.is_available():
         return torch.device("cuda")
+
     has_mps = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
     if has_mps:
         return torch.device("mps")
+
     return torch.device("cpu")
 
 
@@ -53,21 +58,38 @@ class JinaEmbeddingModel:
         batch_size: int = 8,
         device: Any | None = None,
     ) -> None:
+        """Initialize Jina embedding model with lazy loading.
+
+        Args:
+            model_name: HuggingFace model identifier
+            pooling: Pooling strategy (unused, kept for compatibility)
+            normalize: Whether to normalize embeddings (unused, kept for compatibility)
+            batch_size: Batch size for encoding (unused, kept for compatibility)
+            device: Target device (auto-detected if None)
+        """
         resolved_device = _detect_device() if device is None else torch.device(device)
+
         self._model_name = model_name
         self._pooling = pooling
         self._normalize = normalize
         self._batch_size = batch_size
         self._device = resolved_device
+
+        # Use FP16 on GPU for 2x speedup
         self._dtype = (
             torch.float16 if resolved_device.type in {"cuda", "mps"} else torch.float32
         )
+
+        # Lazy initialization - model loaded on first use
         self._model: Any | None = None
         self._dimension: int | None = None
 
     def _ensure_model(self) -> None:
+        """Lazy-load the model on first use."""
         if self._model is not None:
             return
+
+        # Load model from HuggingFace
         model = AutoModel.from_pretrained(
             self._model_name,
             trust_remote_code=True,
@@ -75,19 +97,26 @@ class JinaEmbeddingModel:
         model = model.to(self._device, dtype=self._dtype)
         model.eval().requires_grad_(False)
         self._model = model
+
+        # Infer embedding dimension from model attributes
         dim = getattr(model, "embedding_size", None)
         if dim is None:
             dim = getattr(getattr(model, "config", None), "hidden_size", None)
+
+        # Fall back to probing with a test input
         if dim is None:
             with torch.no_grad():
                 probe = model.encode(["dimension probe"])
+
             if isinstance(probe, torch.Tensor):
                 dim = probe.shape[-1]
             else:
                 probe_arr = np.asarray(probe)
                 dim = probe_arr.shape[-1]
+
         if dim is None:
             raise RuntimeError("Unable to infer embedding dimension for the model.")
+
         self._dimension = int(dim)
 
     @property
@@ -97,15 +126,28 @@ class JinaEmbeddingModel:
         return self._dimension
 
     def embed(self, texts: Sequence[str]) -> np.ndarray:
+        """Encode texts into embedding vectors.
+
+        Returns:
+            Array of shape (len(texts), dimension) with float32 dtype
+        """
         self._ensure_model()
         assert self._model is not None
+
         if not texts:
             return np.zeros((0, self.dimension), dtype=np.float32)
+
+        # Ensure all inputs are strings
         str_texts = [str(t) for t in texts]
+
+        # Run inference without gradients
         with torch.no_grad():
             embeddings = self._model.encode(str_texts)
+
+        # Convert to numpy, handling both Tensor and array outputs
         if isinstance(embeddings, torch.Tensor):
             arr = embeddings.detach().float().cpu().numpy()
         else:
             arr = np.asarray(embeddings)
+
         return arr.astype(np.float32, copy=False)
