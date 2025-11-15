@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Inspect and optionally update a node stored in the WattBot index."""
 
 import argparse

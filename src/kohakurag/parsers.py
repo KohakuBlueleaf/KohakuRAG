@@ -1,9 +1,7 @@
 """Helpers for converting various sources into DocumentPayloads."""
 
-import json
 import re
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 from .text_utils import split_paragraphs, split_sentences

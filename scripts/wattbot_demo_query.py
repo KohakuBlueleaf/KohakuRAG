@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
 """Query the WattBot index and show retrieved snippets."""
 
 import argparse
-from pathlib import Path
 import textwrap
-from typing import List, Sequence
+from pathlib import Path
+from typing import Sequence
 
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
@@ -12,7 +11,7 @@ from kohakurag.datastore import KVaultNodeStore
 
 def _format_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     """Return a simple aligned table for terminal output."""
-    normalized_rows: List[List[str]] = [
+    normalized_rows: list[list[str]] = [
         [str(cell) if cell is not None else "-" for cell in row] for row in rows
     ]
     col_widths = [len(header) for header in headers]

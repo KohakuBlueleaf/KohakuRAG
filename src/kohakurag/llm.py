@@ -6,13 +6,9 @@ import re
 import time
 from pathlib import Path
 
-from .pipeline import ChatModel
+from openai import OpenAI, RateLimitError
 
-try:  # pragma: no cover
-    from openai import OpenAI, RateLimitError
-except ImportError:  # pragma: no cover
-    OpenAI = None  # type: ignore[assignment]
-    RateLimitError = None  # type: ignore[assignment]
+from .pipeline import ChatModel
 
 
 def _load_dotenv(path: str | Path = ".env") -> dict[str, str]:
@@ -42,8 +38,6 @@ class OpenAIChatModel(ChatModel):
         max_retries: int = 5,
         base_retry_delay: float = 3.0,
     ) -> None:
-        if OpenAI is None:  # pragma: no cover
-            raise ImportError("Install openai>=1.0.0 to use OpenAIChatModel.")
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
             dotenv_vars = _load_dotenv()
@@ -93,9 +87,9 @@ class OpenAIChatModel(ChatModel):
 
             except Exception as e:
                 # Check if it's a rate limit error
-                is_rate_limit = (
-                    RateLimitError is not None and isinstance(e, RateLimitError)
-                ) or ("rate" in str(e).lower() and "limit" in str(e).lower())
+                is_rate_limit = isinstance(e, RateLimitError) or (
+                    "rate" in str(e).lower() and "limit" in str(e).lower()
+                )
 
                 if not is_rate_limit or attempt >= self._max_retries:
                     # Not a rate limit error or out of retries

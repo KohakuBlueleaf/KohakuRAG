@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
 """Build a KohakuVault-backed index for WattBot documents."""
+
 import argparse
 import csv
 import json

@@ -1,8 +1,5 @@
 """Document indexing pipeline (structure → embeddings → stored nodes)."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
 from typing import Iterable
 
 import numpy as np

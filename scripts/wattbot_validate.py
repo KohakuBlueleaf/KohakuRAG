@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
 """Validate WattBot predictions against the labeled train_QA.csv file."""
-
-from __future__ import annotations
 
 import argparse
 import ast

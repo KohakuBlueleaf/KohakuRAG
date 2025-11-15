@@ -1,9 +1,7 @@
 """High-level RAG pipeline orchestration."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from typing import Iterable, Mapping, Protocol, Sequence
 
 from .datastore import HierarchicalNodeStore, InMemoryNodeStore, matches_to_snippets

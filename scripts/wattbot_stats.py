@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Report basic statistics for a KohakuVault-backed index."""
 
 import argparse

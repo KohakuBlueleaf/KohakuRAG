@@ -4,14 +4,9 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
+from kohakuvault import KVault, VectorKVault
 
 from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
-
-try:  # pragma: no cover
-    from kohakuvault import KVault, VectorKVault
-except ImportError:  # pragma: no cover
-    KVault = None  # type: ignore[assignment]
-    VectorKVault = None  # type: ignore[assignment]
 
 
 class HierarchicalNodeStore:
@@ -147,10 +142,6 @@ class KVaultNodeStore(HierarchicalNodeStore):
         dimensions: int | None = None,
         metric: str = "cosine",
     ) -> None:
-        if KVault is None or VectorKVault is None:  # pragma: no cover
-            raise ImportError(
-                "kohakuvault is required for KVaultNodeStore. Install kohakuvault>=0.7."
-            )
         self._path = str(path)
         self._kv = KVault(self._path, table=f"{table_prefix}_kv")
         self._kv.enable_auto_pack()

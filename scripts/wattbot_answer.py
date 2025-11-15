@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Answer WattBot questions using the KohakuRAG pipeline + OpenAI (optionally threaded)."""
 
 import argparse
@@ -13,7 +12,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
-from kohakurag.embeddings import EmbeddingModel, JinaEmbeddingModel
+from kohakurag.embeddings import JinaEmbeddingModel
 from kohakurag.llm import OpenAIChatModel
 
 

@@ -3,16 +3,8 @@
 from typing import Any, Protocol, Sequence
 
 import numpy as np
-
-try:  # pragma: no cover - optional dependency until used.
-    import torch
-except ImportError:  # pragma: no cover
-    torch = None  # type: ignore[assignment]
-
-try:  # pragma: no cover
-    from transformers import AutoModel
-except ImportError:  # pragma: no cover
-    AutoModel = None  # type: ignore[assignment]
+import torch
+from transformers import AutoModel
 
 
 class EmbeddingModel(Protocol):
@@ -41,10 +33,6 @@ def average_embeddings(child_vectors: Sequence[np.ndarray]) -> np.ndarray:
 
 
 def _detect_device() -> Any:
-    if torch is None:
-        raise ImportError(
-            "PyTorch is required for this embedding model. Install torch>=2.1.0."
-        )
     if torch.cuda.is_available():
         return torch.device("cuda")
     has_mps = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
@@ -65,10 +53,6 @@ class JinaEmbeddingModel:
         batch_size: int = 8,
         device: Any | None = None,
     ) -> None:
-        if AutoModel is None or torch is None:  # pragma: no cover
-            raise ImportError(
-                "Install torch and transformers to use the JinaEmbeddingModel."
-            )
         resolved_device = _detect_device() if device is None else torch.device(device)
         self._model_name = model_name
         self._pooling = pooling

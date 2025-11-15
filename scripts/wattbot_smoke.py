@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Minimal smoke test that indexes metadata citations and answers one question."""
 
 import argparse

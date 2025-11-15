@@ -1,16 +1,16 @@
-#!/usr/bin/env python3
 """Download WattBot PDFs and convert them into structured JSON payloads."""
 
 import argparse
 import csv
-import sys
 import json
-import requests
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from kohakurag.pdf_utils import pdf_to_document_payload
+import requests
+
 from kohakurag.parsers import payload_to_dict
+from kohakurag.pdf_utils import pdf_to_document_payload
 
 
 def load_metadata(path: Path) -> list[dict[str, str]]:
