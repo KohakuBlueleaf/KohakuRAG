@@ -184,6 +184,7 @@ def normalize_answer_value(raw: str, question: str) -> str:
 # Pre-load the Jina model once and share across all workers to save memory
 # ============================================================================
 
+
 class ThreadSafeEmbeddingModel(EmbeddingModel):
     def __init__(self):
         self._embedder = JinaEmbeddingModel()
@@ -197,6 +198,7 @@ class ThreadSafeEmbeddingModel(EmbeddingModel):
     def embed(self, text: str):
         with self.lock:
             return self._embedder.embed([text])
+
 
 GLOBAL_EMBEDDER = ThreadSafeEmbeddingModel()
 

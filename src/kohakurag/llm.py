@@ -43,6 +43,7 @@ class OpenAIChatModel(ChatModel):
         system_prompt: str | None = None,
         max_retries: int = 5,
         base_retry_delay: float = 3.0,
+        base_url: str | None = None,
     ) -> None:
         """Initialize OpenAI chat model with automatic rate limit retry.
 
@@ -53,7 +54,13 @@ class OpenAIChatModel(ChatModel):
             system_prompt: Default system message for all completions
             max_retries: Maximum retry attempts on rate limit errors
             base_retry_delay: Base delay for exponential backoff (seconds)
+            base_url: Optional override for the API base URL (e.g., for
+                self-hosted or proxy OpenAI-compatible endpoints). If not
+                provided, falls back to the OPENAI_BASE_URL environment
+                variable or .env file when present.
         """
+        dotenv_vars: dict[str, str] | None = None
+
         # Try multiple sources for API key
         key = api_key or os.environ.get("OPENAI_API_KEY")
         if not key:
@@ -63,8 +70,22 @@ class OpenAIChatModel(ChatModel):
         if not key:
             raise ValueError("OPENAI_API_KEY is required for OpenAIChatModel.")
 
+        # Resolve base URL for OpenAI-compatible endpoints
+        resolved_base_url = base_url
+        if resolved_base_url is None:
+            env_base_url = os.environ.get("OPENAI_BASE_URL")
+            if env_base_url is None:
+                if dotenv_vars is None:
+                    dotenv_vars = _load_dotenv()
+                env_base_url = dotenv_vars.get("OPENAI_BASE_URL")
+            resolved_base_url = env_base_url
+
         self._system_prompt = system_prompt or "You are a helpful assistant."
-        self._client = OpenAI(api_key=key, organization=organization)
+        self._client = OpenAI(
+            api_key=key,
+            organization=organization,
+            base_url=resolved_base_url,
+        )
         self._model = model
         self._max_retries = max_retries
         self._base_retry_delay = base_retry_delay
