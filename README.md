@@ -109,6 +109,7 @@ KohakuRAG **automatically handles OpenAI rate limits**:
 - Falls back to exponential backoff (1s, 2s, 4s, 8s, 16s...)
 - Configurable via `max_retries` and `base_retry_delay` parameters
 - Works with restrictive TPM (tokens per minute) limits
+- Can be pointed at any **OpenAI-compatible endpoint** (including self-hosted vLLM/llama.cpp or proxies for Anthropic/Gemini) via `OPENAI_BASE_URL` or the `base_url` argument
 
 ```python
 from kohakurag.llm import OpenAIChatModel
@@ -120,6 +121,8 @@ chat = OpenAIChatModel(
     base_retry_delay=1.0     # Start with 1s delay
 )
 ```
+
+For details on configuring different backends (OpenAI, vLLM, llama.cpp, or OpenAI-compatible proxies), see `docs/deployment.md`.
 
 ---
 

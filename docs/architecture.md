@@ -40,10 +40,15 @@ KohakuRAG is a general-purpose Retrieval-Augmented Generation (RAG) stack. The c
 
 The `OpenAIChatModel` class provides production-ready OpenAI integration with intelligent rate limit management:
 
+**OpenAI-Compatible Backends:**
+- The implementation uses the official `openai` Python client and can talk to **any endpoint that implements the OpenAI Chat Completions protocol**, not just `api.openai.com`.
+- Use the `base_url` argument or `OPENAI_BASE_URL` environment variable to point at self-hosted or proxy servers (for example, vLLM, llama.cpp, or an OpenAI-compatible gateway that fronts Anthropic/Gemini).
+- This keeps the core RAG pipeline dependency surface small while allowing you to swap providers without changing pipeline code—only the configuration and model name change.
+
 **Rate Limit Resilience:**
 - **Automatic retry** – catches `openai.RateLimitError` and retries with configurable backoff
 - **Server-guided delays** – parses error messages like "Please try again in 23ms" and respects the suggested wait time
-- **Exponential backoff** – falls back to 1s, 2s, 4s, 8s, 16s... if no specific delay is provided
+- **Exponential backoff** – falls back to `base_retry_delay * (2 ** attempt)` (for example, 3s, 6s, 12s, 24s, 48s with the default settings) if no specific delay is provided
 - **Configurable behavior** – adjust `max_retries` and `base_retry_delay` based on your rate limits
 
 **Why This Matters:**

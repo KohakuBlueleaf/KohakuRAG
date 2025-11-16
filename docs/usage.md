@@ -119,6 +119,7 @@ chat = OpenAIChatModel(
 2. **Monitor the logs**: Watch for retry messages to gauge how often you're hitting limits
 3. **Scale up gradually**: Increase `--max-workers` until you start seeing frequent retries, then back off
 4. **Use batch processing windows**: Run large jobs during off-peak hours to maximize throughput
+5. **Switch backends via config**: To move from OpenAI-hosted models to self-hosted vLLM/llama.cpp or OpenAI-compatible proxies for Anthropic/Gemini, configure `OPENAI_BASE_URL` / `OPENAI_API_KEY` as described in `docs/deployment.md`.
 
 ## 7. Validate against the labeled training set
 Because the public `data/test_Q.csv` file has no answers, use `data/train_QA.csv` as a proxy leaderboard to measure progress locally:

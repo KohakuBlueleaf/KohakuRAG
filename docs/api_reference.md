@@ -41,7 +41,8 @@ OpenAIChatModel(
     organization: Optional[str] = None,
     system_prompt: str | None = None,
     max_retries: int = 5,
-    base_retry_delay: float = 1.0,
+    base_retry_delay: float = 3.0,
+    base_url: Optional[str] = None,
 )
 ```
 
@@ -52,7 +53,8 @@ OpenAIChatModel(
 - `organization` (Optional[str], default: `None`): OpenAI organization ID
 - `system_prompt` (str | None, default: `None`): Default system prompt for all completions
 - `max_retries` (int, default: `5`): Maximum number of retry attempts on rate limit errors
-- `base_retry_delay` (float, default: `1.0`): Base delay in seconds for exponential backoff
+- `base_retry_delay` (float, default: `3.0`): Base delay in seconds for exponential backoff
+- `base_url` (Optional[str], default: `None`): Optional override for the API base URL (for example, `http://localhost:8000/v1` for self-hosted vLLM/llama.cpp or an OpenAI-compatible proxy). If omitted, falls back to the `OPENAI_BASE_URL` environment variable or `.env` file when present.
 
 **Raises:**
 - `ImportError`: If `openai>=1.0.0` is not installed
@@ -80,7 +82,7 @@ Execute a chat completion request with automatic rate limit retry.
 The method automatically handles rate limit errors using an intelligent retry strategy:
 
 1. **Server-recommended delays**: Parses error messages for suggested wait times (e.g., "Please try again in 23ms")
-2. **Exponential backoff**: Falls back to 1s, 2s, 4s, 8s, 16s... if no specific delay is provided
+2. **Exponential backoff**: Falls back to 3s, 6s, 12s, 24s, 48s... by default if no specific delay is provided (scaled by `base_retry_delay`)
 3. **Automatic retry**: Continues until success or `max_retries` is exhausted
 
 **Example:**
@@ -122,11 +124,11 @@ The retry mechanism is designed to work seamlessly with OpenAI's rate limits:
 **Exponential Backoff Schedule:**
 | Attempt | Wait Time (seconds) |
 |---------|---------------------|
-| 1       | 1.0                 |
-| 2       | 2.0                 |
-| 3       | 4.0                 |
-| 4       | 8.0                 |
-| 5       | 16.0                |
+| 1       | 3.0                 |
+| 2       | 6.0                 |
+| 3       | 12.0                |
+| 4       | 24.0                |
+| 5       | 48.0                |
 
 **Console Output Example:**
 ```
