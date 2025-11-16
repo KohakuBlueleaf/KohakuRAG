@@ -1,12 +1,12 @@
 """Chat model integrations (e.g., OpenAI)."""
 
+import asyncio
 import os
 import random
 import re
-import time
 from pathlib import Path
 
-from openai import OpenAI, RateLimitError
+from openai import AsyncOpenAI, RateLimitError
 
 from .pipeline import ChatModel
 
@@ -44,6 +44,7 @@ class OpenAIChatModel(ChatModel):
         max_retries: int = 5,
         base_retry_delay: float = 3.0,
         base_url: str | None = None,
+        max_concurrent: int = 10,
     ) -> None:
         """Initialize OpenAI chat model with automatic rate limit retry.
 
@@ -58,6 +59,8 @@ class OpenAIChatModel(ChatModel):
                 self-hosted or proxy OpenAI-compatible endpoints). If not
                 provided, falls back to the OPENAI_BASE_URL environment
                 variable or .env file when present.
+            max_concurrent: Maximum number of concurrent API requests (default: 10).
+                Set to 0 or negative to disable rate limiting (unlimited concurrency).
         """
         dotenv_vars: dict[str, str] | None = None
 
@@ -81,7 +84,7 @@ class OpenAIChatModel(ChatModel):
             resolved_base_url = env_base_url
 
         self._system_prompt = system_prompt or "You are a helpful assistant."
-        self._client = OpenAI(
+        self._client = AsyncOpenAI(
             api_key=key,
             organization=organization,
             base_url=resolved_base_url,
@@ -89,6 +92,10 @@ class OpenAIChatModel(ChatModel):
         self._model = model
         self._max_retries = max_retries
         self._base_retry_delay = base_retry_delay
+        # Only create semaphore if max_concurrent > 0 (rate limiting enabled)
+        self._semaphore = (
+            asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+        )
 
     def _parse_retry_after(self, error_message: str) -> float | None:
         """Extract wait time from rate limit error message.
@@ -110,13 +117,14 @@ class OpenAIChatModel(ChatModel):
                 return value * multiplier
         return None
 
-    def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+    async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
         """Execute chat completion with automatic rate limit retry.
 
         Uses intelligent retry strategy:
-        1. Parse server-recommended delay from error message
-        2. Fall back to exponential backoff if no delay specified
-        3. Apply jitter to avoid thundering herd
+        1. Semaphore limits concurrent requests (if enabled)
+        2. Parse server-recommended delay from error message
+        3. Fall back to exponential backoff if no delay specified
+        4. Apply jitter to avoid thundering herd
 
         Returns:
             Model's text response
@@ -125,15 +133,29 @@ class OpenAIChatModel(ChatModel):
 
         for attempt in range(self._max_retries + 1):
             try:
-                response = self._client.chat.completions.create(
-                    model=self._model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": prompt},
-                    ],
-                )
-                choice = response.choices[0]
-                return choice.message.content or ""
+                # Use semaphore only if rate limiting is enabled
+                if self._semaphore is not None:
+                    async with self._semaphore:
+                        response = await self._client.chat.completions.create(
+                            model=self._model,
+                            messages=[
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": prompt},
+                            ],
+                        )
+                        choice = response.choices[0]
+                        return choice.message.content or ""
+                else:
+                    # No rate limiting - make request directly
+                    response = await self._client.chat.completions.create(
+                        model=self._model,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": prompt},
+                        ],
+                    )
+                    choice = response.choices[0]
+                    return choice.message.content or ""
 
             except Exception as e:
                 # Check if it's a rate limit error (by type or message)
@@ -163,6 +185,6 @@ class OpenAIChatModel(ChatModel):
                     f"Rate limit hit (attempt {attempt + 1}/{self._max_retries + 1}). "
                     f"Waiting {wait_time:.2f}s before retry..."
                 )
-                time.sleep(wait_time)
+                await asyncio.sleep(wait_time)
 
         raise RuntimeError("Unexpected end of retry loop")

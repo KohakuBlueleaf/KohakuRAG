@@ -1,5 +1,7 @@
 """Embedding utilities used across KohakuRAG."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol, Sequence
 
 import numpy as np
@@ -14,7 +16,7 @@ class EmbeddingModel(Protocol):
     def dimension(self) -> int:  # pragma: no cover - interface only
         ...
 
-    def embed(self, texts: Sequence[str]) -> np.ndarray:  # pragma: no cover
+    async def embed(self, texts: Sequence[str]) -> np.ndarray:  # pragma: no cover
         """Return a 2D numpy array of shape (len(texts), dimension)."""
 
 
@@ -84,6 +86,14 @@ class JinaEmbeddingModel:
         self._model: Any | None = None
         self._dimension: int | None = None
 
+        # Single-worker executor for thread-safe async embedding
+        self._executor = ThreadPoolExecutor(max_workers=1)
+
+    def __del__(self) -> None:
+        """Cleanup executor on deletion."""
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=False)
+
     def _ensure_model(self) -> None:
         """Lazy-load the model on first use."""
         if self._model is not None:
@@ -125,8 +135,8 @@ class JinaEmbeddingModel:
         assert self._dimension is not None
         return self._dimension
 
-    def embed(self, texts: Sequence[str]) -> np.ndarray:
-        """Encode texts into embedding vectors.
+    def _sync_encode(self, texts: Sequence[str]) -> np.ndarray:
+        """Synchronous encoding logic (called via executor).
 
         Returns:
             Array of shape (len(texts), dimension) with float32 dtype
@@ -151,3 +161,14 @@ class JinaEmbeddingModel:
             arr = np.asarray(embeddings)
 
         return arr.astype(np.float32, copy=False)
+
+    async def embed(self, texts: Sequence[str]) -> np.ndarray:
+        """Encode texts into embedding vectors (async).
+
+        Uses single-worker executor to ensure thread safety for GPU operations.
+
+        Returns:
+            Array of shape (len(texts), dimension) with float32 dtype
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self._sync_encode, texts)

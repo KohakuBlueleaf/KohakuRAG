@@ -51,10 +51,10 @@ class DocumentIndexer:
     def __init__(self, embedding_model: EmbeddingModel | None = None) -> None:
         self._embedding_model = embedding_model or JinaEmbeddingModel()
 
-    def index(self, document: DocumentPayload) -> list[StoredNode]:
+    async def index(self, document: DocumentPayload) -> list[StoredNode]:
         """Build hierarchical tree, compute embeddings, and return storable nodes."""
         root = self._build_tree(document)
-        self._embed_tree(root)
+        await self._embed_tree(root)
         return [self._to_stored(node) for node in self._flatten(root)]
 
     def _build_tree(self, document: DocumentPayload) -> TreeNode:
@@ -161,12 +161,14 @@ class DocumentIndexer:
 
         return root
 
-    def _embed_tree(self, root: TreeNode) -> None:
+    async def _embed_tree(self, root: TreeNode) -> None:
         """Embed leaf nodes and propagate upward to parents."""
         # Batch-embed all leaf nodes (sentences) for efficiency
         leaves = [node for node in self._flatten(root) if not node.children]
         if leaves:
-            embeddings = self._embedding_model.embed([leaf.text for leaf in leaves])
+            embeddings = await self._embedding_model.embed(
+                [leaf.text for leaf in leaves]
+            )
             for leaf, vector in zip(leaves, embeddings, strict=True):
                 leaf.embedding = vector
 

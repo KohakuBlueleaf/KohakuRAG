@@ -1,5 +1,7 @@
 """Simple hierarchical vector store implementations."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Sequence
 
@@ -12,13 +14,15 @@ from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
 class HierarchicalNodeStore:
     """Abstract interface for node stores."""
 
-    def upsert_nodes(self, nodes: Sequence[StoredNode]) -> None:  # pragma: no cover
+    async def upsert_nodes(
+        self, nodes: Sequence[StoredNode]
+    ) -> None:  # pragma: no cover
         raise NotImplementedError
 
-    def get_node(self, node_id: str) -> StoredNode:  # pragma: no cover
+    async def get_node(self, node_id: str) -> StoredNode:  # pragma: no cover
         raise NotImplementedError
 
-    def search(
+    async def search(
         self,
         query_vector: np.ndarray,
         *,
@@ -27,7 +31,7 @@ class HierarchicalNodeStore:
     ) -> list[RetrievalMatch]:  # pragma: no cover
         raise NotImplementedError
 
-    def get_context(
+    async def get_context(
         self,
         node_id: str,
         *,
@@ -43,12 +47,12 @@ class InMemoryNodeStore(HierarchicalNodeStore):
     def __init__(self) -> None:
         self._nodes: dict[str, StoredNode] = {}
 
-    def upsert_nodes(self, nodes: Sequence[StoredNode]) -> None:
+    async def upsert_nodes(self, nodes: Sequence[StoredNode]) -> None:
         """Store nodes in memory (overwrites existing)."""
         for node in nodes:
             self._nodes[node.node_id] = node
 
-    def get_node(self, node_id: str) -> StoredNode:
+    async def get_node(self, node_id: str) -> StoredNode:
         return self._nodes[node_id]
 
     def _normalize(self, vector: np.ndarray) -> np.ndarray:
@@ -58,7 +62,7 @@ class InMemoryNodeStore(HierarchicalNodeStore):
             return vector
         return vector / norm
 
-    def search(
+    async def search(
         self,
         query_vector: np.ndarray,
         *,
@@ -85,7 +89,7 @@ class InMemoryNodeStore(HierarchicalNodeStore):
         matches.sort(key=lambda item: item.score, reverse=True)
         return matches[:k]
 
-    def get_context(
+    async def get_context(
         self,
         node_id: str,
         *,
@@ -93,7 +97,7 @@ class InMemoryNodeStore(HierarchicalNodeStore):
         child_depth: int = 0,
     ) -> list[StoredNode]:
         """Retrieve node with hierarchical context (parents and/or children)."""
-        node = self.get_node(node_id)
+        node = await self.get_node(node_id)
         context: list[StoredNode] = [node]
 
         # Walk up the parent chain
@@ -102,12 +106,12 @@ class InMemoryNodeStore(HierarchicalNodeStore):
             for _ in range(parent_depth):
                 if parent.parent_id is None:
                     break
-                parent = self.get_node(parent.parent_id)
+                parent = await self.get_node(parent.parent_id)
                 context.append(parent)
 
         # Walk down to children
         if child_depth > 0:
-            self._collect_children(
+            await self._collect_children(
                 node, depth=child_depth, accumulator=context, seen=set()
             )
 
@@ -122,7 +126,7 @@ class InMemoryNodeStore(HierarchicalNodeStore):
 
         return unique
 
-    def _collect_children(
+    async def _collect_children(
         self,
         node: StoredNode,
         *,
@@ -139,11 +143,11 @@ class InMemoryNodeStore(HierarchicalNodeStore):
                 continue
 
             seen.add(child_id)
-            child = self.get_node(child_id)
+            child = await self.get_node(child_id)
             accumulator.append(child)
 
             # Recurse to grandchildren
-            self._collect_children(
+            await self._collect_children(
                 child,
                 depth=depth - 1,
                 accumulator=accumulator,
@@ -218,12 +222,20 @@ class KVaultNodeStore(HierarchicalNodeStore):
         self._vectors.enable_auto_pack()
         self._metric = metric
 
+        # Single-worker executor for thread-safe async SQLite operations
+        self._executor = ThreadPoolExecutor(max_workers=1)
+
+    def __del__(self) -> None:
+        """Cleanup executor on deletion."""
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=False)
+
     @property
     def dimensions(self) -> int:
         return self._dimensions
 
-    def upsert_nodes(self, nodes: Sequence[StoredNode]) -> None:
-        """Insert or update nodes (metadata + embeddings)."""
+    def _sync_upsert_nodes(self, nodes: Sequence[StoredNode]) -> None:
+        """Synchronous upsert logic (called via executor)."""
         for node in nodes:
             record = self._serialize_node(node)
             row_id = record.get("vector_row_id")
@@ -248,18 +260,27 @@ class KVaultNodeStore(HierarchicalNodeStore):
             record["vector_row_id"] = vector_row
             self._kv[node.node_id] = record
 
-    def get_node(self, node_id: str) -> StoredNode:
+    async def upsert_nodes(self, nodes: Sequence[StoredNode]) -> None:
+        """Insert or update nodes (metadata + embeddings)."""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self._executor, self._sync_upsert_nodes, nodes)
+
+    def _sync_get_node(self, node_id: str) -> StoredNode:
+        """Synchronous get_node logic (called via executor)."""
         record = self._kv[node_id]
         return self._deserialize_node(record)
 
-    def search(
+    async def get_node(self, node_id: str) -> StoredNode:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self._sync_get_node, node_id)
+
+    def _sync_search(
         self,
         query_vector: np.ndarray,
-        *,
-        k: int = 5,
-        kinds: set[NodeKind] | None = None,
+        k: int,
+        kinds: set[NodeKind] | None,
     ) -> list[RetrievalMatch]:
-        """Vector similarity search with optional node type filtering."""
+        """Synchronous search logic (called via executor)."""
         if query_vector.ndim != 1:
             raise ValueError("query_vector must be a 1D numpy array.")
 
@@ -272,7 +293,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
         # Fetch full nodes and apply filters
         matches: list[RetrievalMatch] = []
         for row_id, distance, node_id in results:
-            node = self.get_node(node_id)
+            node = self._sync_get_node(node_id)
 
             # Skip if node type doesn't match filter
             if kinds is not None and node.kind not in kinds:
@@ -287,18 +308,27 @@ class KVaultNodeStore(HierarchicalNodeStore):
         matches.sort(key=lambda item: item.score, reverse=True)
         return matches[:k]
 
-    def get_context(
+    async def search(
+        self,
+        query_vector: np.ndarray,
+        *,
+        k: int = 5,
+        kinds: set[NodeKind] | None = None,
+    ) -> list[RetrievalMatch]:
+        """Vector similarity search with optional node type filtering."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor, self._sync_search, query_vector, k, kinds
+        )
+
+    def _sync_get_context(
         self,
         node_id: str,
-        *,
-        parent_depth: int = 1,
-        child_depth: int = 0,
+        parent_depth: int,
+        child_depth: int,
     ) -> list[StoredNode]:
-        """Retrieve node with hierarchical context (parents and/or children).
-
-        Example: For a matched sentence, get its paragraph and section too.
-        """
-        node = self.get_node(node_id)
+        """Synchronous get_context logic (called via executor)."""
+        node = self._sync_get_node(node_id)
         context: list[StoredNode] = [node]
 
         # Walk up the parent chain (sentence → paragraph → section → document)
@@ -307,12 +337,12 @@ class KVaultNodeStore(HierarchicalNodeStore):
             for _ in range(parent_depth):
                 if parent.parent_id is None:
                     break
-                parent = self.get_node(parent.parent_id)
+                parent = self._sync_get_node(parent.parent_id)
                 context.append(parent)
 
         # Walk down to children (paragraph → sentences)
         if child_depth > 0:
-            self._collect_children(
+            self._sync_collect_children(
                 node,
                 depth=child_depth,
                 accumulator=context,
@@ -330,7 +360,23 @@ class KVaultNodeStore(HierarchicalNodeStore):
 
         return unique
 
-    def _collect_children(
+    async def get_context(
+        self,
+        node_id: str,
+        *,
+        parent_depth: int = 1,
+        child_depth: int = 0,
+    ) -> list[StoredNode]:
+        """Retrieve node with hierarchical context (parents and/or children).
+
+        Example: For a matched sentence, get its paragraph and section too.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor, self._sync_get_context, node_id, parent_depth, child_depth
+        )
+
+    def _sync_collect_children(
         self,
         node: StoredNode,
         *,
@@ -347,11 +393,11 @@ class KVaultNodeStore(HierarchicalNodeStore):
                 continue
 
             seen.add(child_id)
-            child = self.get_node(child_id)
+            child = self._sync_get_node(child_id)
             accumulator.append(child)
 
             # Recurse to grandchildren
-            self._collect_children(
+            self._sync_collect_children(
                 child,
                 depth=depth - 1,
                 accumulator=accumulator,
@@ -404,7 +450,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
         )
 
 
-def matches_to_snippets(
+async def matches_to_snippets(
     matches: Sequence[RetrievalMatch],
     store: HierarchicalNodeStore,
     *,
@@ -420,7 +466,7 @@ def matches_to_snippets(
     """
     snippets: list[ContextSnippet] = []
     for rank, match in enumerate(matches, 1):
-        nodes = store.get_context(
+        nodes = await store.get_context(
             match.node.node_id,
             parent_depth=parent_depth,
             child_depth=child_depth,

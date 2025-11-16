@@ -17,7 +17,7 @@ from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
 class ChatModel(Protocol):
     """Protocol for chat backends."""
 
-    def complete(
+    async def complete(
         self,
         prompt: str,
         *,
@@ -29,7 +29,7 @@ class ChatModel(Protocol):
 class QueryPlanner(Protocol):
     """Protocol for query expansion/rewriting."""
 
-    def plan(self, question: str) -> Sequence[str]:  # pragma: no cover
+    async def plan(self, question: str) -> Sequence[str]:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -127,7 +127,7 @@ def format_snippets(snippets: Sequence[ContextSnippet]) -> str:
 class SimpleQueryPlanner:
     """Pass-through planner that uses the raw question without expansion."""
 
-    def plan(self, question: str) -> Sequence[str]:
+    async def plan(self, question: str) -> Sequence[str]:
         """Return single-element list containing the original question."""
         return [question]
 
@@ -135,7 +135,7 @@ class SimpleQueryPlanner:
 class MockChatModel:
     """Dummy LLM for testing (returns truncated context)."""
 
-    def complete(
+    async def complete(
         self,
         prompt: str,
         *,
@@ -176,11 +176,13 @@ class RAGPipeline:
     def store(self) -> HierarchicalNodeStore:
         return self._store
 
-    def index_documents(self, documents: Iterable[StoredNode]) -> None:
+    async def index_documents(self, documents: Iterable[StoredNode]) -> None:
         """Bulk insert pre-built nodes into the store."""
-        self._store.upsert_nodes(list(documents))
+        await self._store.upsert_nodes(list(documents))
 
-    def retrieve(self, question: str, *, top_k: int | None = None) -> RetrievalResult:
+    async def retrieve(
+        self, question: str, *, top_k: int | None = None
+    ) -> RetrievalResult:
         """Execute multi-query retrieval with hierarchical context expansion.
 
         For each planner-generated query, we independently search the vector
@@ -190,18 +192,18 @@ class RAGPipeline:
         neighborhood of matches when top_k > 0.
         """
         # Generate multiple retrieval queries (or just one if simple planner)
-        queries = list(self._planner.plan(question))
+        queries = list(await self._planner.plan(question))
         if not queries:
             raise ValueError("Planner returned no queries.")
 
         # Embed all queries
-        query_vectors = self._embedder.embed(queries)
+        query_vectors = await self._embedder.embed(queries)
         k = top_k or self._top_k
 
         # Execute each query independently
         all_matches: list[RetrievalMatch] = []
         for vector in query_vectors:
-            matches = self._store.search(
+            matches = await self._store.search(
                 vector,
                 k=k,
                 kinds={
@@ -212,7 +214,7 @@ class RAGPipeline:
             all_matches.extend(matches)
 
         # Expand each match with hierarchical context
-        snippets = matches_to_snippets(
+        snippets = await matches_to_snippets(
             all_matches,
             self._store,
             parent_depth=1,  # Include parent paragraph/section
@@ -225,11 +227,11 @@ class RAGPipeline:
             snippets=snippets,
         )
 
-    def answer(self, question: str) -> dict:
+    async def answer(self, question: str) -> dict:
         """Simple QA: retrieve + prompt + generate (returns unstructured dict)."""
-        retrieval = self.retrieve(question)
+        retrieval = await self.retrieve(question)
         prompt = self._build_prompt(question, retrieval.snippets)
-        response = self._chat.complete(prompt)
+        response = await self._chat.complete(prompt)
 
         return {
             "question": question,
@@ -237,7 +239,7 @@ class RAGPipeline:
             "snippets": retrieval.snippets,
         }
 
-    def structured_answer(
+    async def structured_answer(
         self,
         question: str,
         prompt: PromptTemplate,
@@ -245,13 +247,15 @@ class RAGPipeline:
         top_k: int | None = None,
     ) -> StructuredAnswerResult:
         """QA with custom prompt template and structured JSON parsing."""
-        retrieval = self.retrieve(question, top_k=top_k)
+        retrieval = await self.retrieve(question, top_k=top_k)
 
         # Render user prompt with context
         rendered_prompt = prompt.render(question=question, snippets=retrieval.snippets)
 
         # Get LLM response
-        raw = self._chat.complete(rendered_prompt, system_prompt=prompt.system_prompt)
+        raw = await self._chat.complete(
+            rendered_prompt, system_prompt=prompt.system_prompt
+        )
 
         # Parse JSON structure
         parsed = self._parse_structured_response(raw)
@@ -263,7 +267,7 @@ class RAGPipeline:
             prompt=rendered_prompt,
         )
 
-    def run_qa(
+    async def run_qa(
         self,
         question: str,
         *,
@@ -283,7 +287,7 @@ class RAGPipeline:
             user_template=user_template,
             additional_info=additional_info,
         )
-        return self.structured_answer(
+        return await self.structured_answer(
             question=question,
             prompt=template,
             top_k=top_k,
