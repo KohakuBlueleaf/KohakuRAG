@@ -5,30 +5,31 @@ This script demonstrates end-to-end RAG usage:
 - Retrieves relevant context from the index
 - Generates structured answers via OpenAI
 - Handles rate limits automatically
-- Supports concurrent processing with thread pooling
+- Supports concurrent processing with asyncio.gather()
 
 Usage:
     python scripts/wattbot_answer.py \\
         --db artifacts/wattbot.db \\
         --questions data/test_Q.csv \\
         --output artifacts/answers.csv \\
-        --model gpt-4o-mini \\
-        --max-workers 4
+        --model gpt-4o-mini
 """
 
 import argparse
-import concurrent.futures
+import asyncio
 import csv
 import json
 import re
-import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from types import SimpleNamespace
+from typing import Any, Mapping, Sequence
+
+from openai import BadRequestError
 
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
-from kohakurag.embeddings import JinaEmbeddingModel, EmbeddingModel
+from kohakurag.embeddings import JinaEmbeddingModel
 from kohakurag.llm import OpenAIChatModel
 
 
@@ -181,26 +182,11 @@ def normalize_answer_value(raw: str, question: str) -> str:
 
 # ============================================================================
 # GLOBAL SHARED EMBEDDER
-# Pre-load the Jina model once and share across all workers to save memory
+# Pre-load the Jina model once and share across concurrent tasks
 # ============================================================================
 
-
-class ThreadSafeEmbeddingModel(EmbeddingModel):
-    def __init__(self):
-        self._embedder = JinaEmbeddingModel()
-        self._embedder._ensure_model()
-        self.lock = threading.Lock()
-
-    @property
-    def dimension(self):
-        return self._embedder.dimension
-
-    def embed(self, text: str):
-        with self.lock:
-            return self._embedder.embed([text])
-
-
-GLOBAL_EMBEDDER = ThreadSafeEmbeddingModel()
+# Create a single shared embedder (thread-safe via async executor)
+GLOBAL_EMBEDDER = JinaEmbeddingModel()
 
 
 # ============================================================================
@@ -215,7 +201,7 @@ class LLMQueryPlanner:
         self._chat = chat
         self._max_queries = max(1, max_queries)
 
-    def plan(self, question: str) -> Sequence[str]:
+    async def plan(self, question: str) -> Sequence[str]:
         """Generate multiple retrieval queries from a single question.
 
         Strategy:
@@ -237,7 +223,7 @@ JSON:
 """.strip()
 
         # Ask LLM to generate query variations
-        raw = self._chat.complete(prompt)
+        raw = await self._chat.complete(prompt)
 
         # Parse JSON response
         try:
@@ -302,14 +288,14 @@ def load_questions(path: Path) -> tuple[list[Row], list[str]]:
 
 
 # ============================================================================
-# WORKER CONFIGURATION
-# Thread-local storage for pipeline resources (one per worker thread)
+# SHARED RESOURCES
+# All async tasks share the same pipeline (thread-safe via async)
 # ============================================================================
 
 
 @dataclass(frozen=True)
-class WorkerConfig:
-    """Immutable config shared across all workers."""
+class AppConfig:
+    """Immutable config for the application."""
 
     db: Path
     table_prefix: str
@@ -319,14 +305,7 @@ class WorkerConfig:
     planner_max_queries: int
     metadata: Mapping[str, Mapping[str, str]]
     max_retries: int
-
-
-@dataclass
-class WorkerResources:
-    """Per-worker resources (datastore, LLM client, pipeline)."""
-
-    pipeline: RAGPipeline
-    chat: OpenAIChatModel
+    max_concurrent: int
 
 
 @dataclass(frozen=True)
@@ -338,50 +317,42 @@ class AnswerResult:
     message: str
 
 
-# Thread-local storage for worker resources
-_worker_local = threading.local()
+def create_pipeline(config: AppConfig) -> RAGPipeline:
+    """Create a shared RAG pipeline for all async tasks."""
+    # Datastore (thread-safe via async executor)
+    store = KVaultNodeStore(
+        config.db,
+        table_prefix=config.table_prefix,
+        dimensions=None,
+    )
 
+    # Query planner LLM (generates retrieval queries)
+    planner_chat = OpenAIChatModel(
+        model=config.planner_model,
+        system_prompt=PLANNER_SYSTEM_PROMPT,
+        max_concurrent=config.max_concurrent,
+    )
+    planner = LLMQueryPlanner(
+        chat=planner_chat,
+        max_queries=config.planner_max_queries,
+    )
 
-def _get_resources(config: WorkerConfig) -> WorkerResources:
-    """Get or create worker-local pipeline resources.
+    # Answer LLM (generates final structured answers)
+    chat = OpenAIChatModel(
+        model=config.model,
+        system_prompt=ANSWER_SYSTEM_PROMPT,
+        max_concurrent=config.max_concurrent,
+    )
 
-    Each worker thread gets its own datastore connection and LLM client
-    to avoid thread-safety issues. The embedder is shared globally.
-    """
-    resources = getattr(_worker_local, "resources", None)
-    if resources is None:
-        # Build new resources for this worker
-        store = KVaultNodeStore(
-            config.db,
-            table_prefix=config.table_prefix,
-            dimensions=None,
-        )
+    # Assemble the full RAG pipeline
+    pipeline = RAGPipeline(
+        store=store,
+        embedder=GLOBAL_EMBEDDER,  # Shared embedder
+        chat_model=chat,
+        planner=planner,
+    )
 
-        # Query planner LLM (generates retrieval queries)
-        planner_chat = OpenAIChatModel(
-            model=config.planner_model,
-            system_prompt=PLANNER_SYSTEM_PROMPT,
-        )
-        planner = LLMQueryPlanner(
-            chat=planner_chat,
-            max_queries=config.planner_max_queries,
-        )
-
-        # Answer LLM (generates final structured answers)
-        chat = OpenAIChatModel(model=config.model, system_prompt=ANSWER_SYSTEM_PROMPT)
-
-        # Assemble the full RAG pipeline
-        pipeline = RAGPipeline(
-            store=store,
-            embedder=GLOBAL_EMBEDDER,  # Shared across workers
-            chat_model=chat,
-            planner=planner,
-        )
-
-        resources = WorkerResources(pipeline=pipeline, chat=chat)
-        _worker_local.resources = resources
-
-    return resources
+    return pipeline
 
 
 # ============================================================================
@@ -389,50 +360,97 @@ def _get_resources(config: WorkerConfig) -> WorkerResources:
 # ============================================================================
 
 
-def _answer_single_row(
-    idx: int, row: Row, columns: Sequence[str], config: WorkerConfig
+async def _answer_single_row(
+    idx: int,
+    row: Row,
+    columns: Sequence[str],
+    config: AppConfig,
+    pipeline: RAGPipeline,
+    retry_count: int | None = None,
+    override_top_k: int | None = None,
 ) -> AnswerResult:
-    """Answer a single question with retry logic for blank responses.
+    """Answer a single question with retry logic for blank responses and context overflow handling.
 
     Strategy:
-    - Start with top_k context snippets
-    - If answer is blank, retry with 2*top_k, then 3*top_k, etc.
-    - Stop when we get a non-blank answer or exhaust retries
+    - Start with top_k context snippets (or override_top_k if provided)
+    - If answer is blank, retry with 2*top_k, then 3*top_k, etc. (unless retry_count=0)
+    - If context overflow (400 error), recursively retry with retry_count=0 and k=k-1
+    - Return immediately after successful context overflow recovery
+
+    Args:
+        retry_count: If 0, skip blank retries. If None, use config.max_retries.
+        override_top_k: If provided, use this instead of config.top_k as base.
     """
-    resources = _get_resources(config)
     question = row["question"]
     additional_info: dict[str, Any] = {
         "answer_unit": (row.get("answer_unit") or "").strip(),
         "question_id": row.get("id", "").strip(),
     }
 
+    # Determine retry behavior
+    max_retries = 0 if retry_count == 0 else (retry_count or config.max_retries)
+    base_top_k = override_top_k or config.top_k
+
     # Retry loop: increase context window each iteration if answer is blank
     qa_result = None
     structured = None
-    is_blank = True
 
-    for attempt in range(config.max_retries + 1):
-        # Expand retrieval window: top_k, 2*top_k, 3*top_k...
-        current_top_k = config.top_k * (attempt + 1)
+    for attempt in range(max_retries + 1):
+        current_top_k = base_top_k * (attempt + 1)
 
-        qa_result = resources.pipeline.run_qa(
-            question,
-            system_prompt=ANSWER_SYSTEM_PROMPT,
-            user_template=USER_PROMPT_TEMPLATE,
-            additional_info=additional_info,
-            top_k=current_top_k,
+        try:
+            qa_result = await pipeline.run_qa(
+                question,
+                system_prompt=ANSWER_SYSTEM_PROMPT,
+                user_template=USER_PROMPT_TEMPLATE,
+                additional_info=additional_info,
+                top_k=current_top_k,
+            )
+            structured = qa_result.answer
+            is_blank = (
+                structured.answer_value.strip().lower() == BLANK_TOKEN
+                or not structured.ref_id
+            )
+
+            if not is_blank:
+                break  # Got a valid answer, stop retrying
+
+        except BadRequestError as e:
+            # Check if it's a context length overflow error
+            error_msg = str(e).lower()
+            if "context length" in error_msg or "maximum context" in error_msg:
+                reduced_top_k = current_top_k - 1
+                if reduced_top_k < 1:
+                    print(
+                        f"Context overflow for {additional_info['question_id']}, minimum top_k=1 failed, returning blank"
+                    )
+                    break
+
+                print(
+                    f"Context overflow for {additional_info['question_id']}, recursively retrying with top_k={reduced_top_k}"
+                )
+                # Recursively retry with reduced top_k and no blank retries
+                return await _answer_single_row(
+                    idx,
+                    row,
+                    columns,
+                    config,
+                    pipeline,
+                    retry_count=0,
+                    override_top_k=reduced_top_k,
+                )
+            else:
+                raise  # Not a context overflow error
+
+    # Create blank result if we don't have a valid answer
+    if qa_result is None or structured is None:
+        structured = SimpleNamespace(
+            answer="", answer_value=BLANK_TOKEN, ref_id=[], explanation=""
         )
 
-        structured = qa_result.answer
-        is_blank = (
-            structured.answer_value.strip().lower() == BLANK_TOKEN
-            or not structured.ref_id
-        )
-
-        if not is_blank:
-            break  # Got a valid answer, stop retrying
-
-    assert qa_result is not None and structured is not None
+    is_blank = (
+        structured.answer_value.strip().lower() == BLANK_TOKEN or not structured.ref_id
+    )
 
     # Format output row based on answer status
     result = dict(row)
@@ -476,25 +494,24 @@ def _answer_single_row(
     )
 
 
-def answer_questions(
+async def answer_questions(
     rows: Sequence[Row],
     columns: Sequence[str],
-    config: WorkerConfig,
-    max_workers: int,
-) -> Iterator[AnswerResult]:
-    """Process all questions using thread pool, yielding results as they complete."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all questions to the thread pool
-        futures = [
-            executor.submit(_answer_single_row, idx, row, columns, config)
-            for idx, row in enumerate(rows)
-        ]
+    config: AppConfig,
+    pipeline: RAGPipeline,
+):
+    """Process all questions concurrently, yielding results as they complete."""
+    # Create async tasks for all questions
+    tasks = [
+        asyncio.create_task(_answer_single_row(idx, row, columns, config, pipeline))
+        for idx, row in enumerate(rows)
+    ]
 
-        # Yield results as they complete (may be out of order)
-        for future in concurrent.futures.as_completed(futures):
-            answer = future.result()
-            print(answer.message)
-            yield answer
+    # Yield results as they complete
+    for coro in asyncio.as_completed(tasks):
+        result = await coro
+        print(result.message)
+        yield result
 
 
 # ============================================================================
@@ -536,6 +553,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of extra retrieval attempts when the model returns is_blank.",
     )
     parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=10,
+        help="Maximum number of concurrent API requests (default: 10). Set to 0 or negative to disable rate limiting.",
+    )
+    parser.add_argument(
         "--single-run-debug",
         action="store_true",
         help="Only process the first question and print intermediate details.",
@@ -544,27 +567,148 @@ def parse_args() -> argparse.Namespace:
         "--question-id",
         help="Question id to debug in single-run mode (defaults to the first row).",
     )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=1,
-        help="Number of concurrent question workers (default: 1, meaning sequential).",
-    )
     return parser.parse_args()
 
 
-def main() -> None:
-    """Main entry point: load data, build workers, process questions."""
+# ============================================================================
+# SINGLE-RUN DEBUG MODE
+# ============================================================================
+
+
+async def run_single_question_debug(
+    first_row: Row,
+    columns: Sequence[str],
+    config: AppConfig,
+    pipeline: RAGPipeline,
+    writer: csv.DictWriter,
+    f_out,
+) -> None:
+    """Run a single question with detailed debugging output."""
+    question = first_row["question"]
+    additional_info: dict[str, Any] = {
+        "answer_unit": (first_row.get("answer_unit") or "").strip(),
+        "question_id": first_row.get("id", "").strip(),
+    }
+
+    attempts_log: list[dict[str, Any]] = []
+    qa_result = None
+    structured = None
+    is_blank = True
+
+    # Retry with increasing context window
+    for attempt in range(config.max_retries + 1):
+        current_top_k = config.top_k * (attempt + 1)
+        qa_result = await pipeline.run_qa(
+            question,
+            system_prompt=ANSWER_SYSTEM_PROMPT,
+            user_template=USER_PROMPT_TEMPLATE,
+            additional_info=additional_info,
+            top_k=current_top_k,
+        )
+        structured = qa_result.answer
+        is_blank = (
+            structured.answer_value.strip().lower() == BLANK_TOKEN
+            or not structured.ref_id
+        )
+        attempts_log.append(
+            {
+                "attempt": attempt + 1,
+                "top_k": current_top_k,
+                "is_blank": is_blank,
+                "prompt": qa_result.prompt,
+                "raw": qa_result.raw_response,
+                "parsed": {
+                    "answer": structured.answer,
+                    "answer_value": structured.answer_value,
+                    "ref_id": structured.ref_id,
+                    "explanation": structured.explanation,
+                },
+            }
+        )
+
+        if not is_blank:
+            break  # Got answer, stop retrying
+
+    assert qa_result is not None and structured is not None
+
+    # Format output row
+    result_row: Row = dict(first_row)
+
+    if is_blank:
+        result_row["answer"] = BLANK_TOKEN
+        result_row["answer_value"] = BLANK_TOKEN
+        result_row["ref_id"] = BLANK_TOKEN
+        result_row["ref_url"] = BLANK_TOKEN
+        result_row["supporting_materials"] = BLANK_TOKEN
+        result_row["explanation"] = BLANK_TOKEN
+    else:
+        result_row["answer"] = structured.answer or BLANK_TOKEN
+        normalized_value = normalize_answer_value(structured.answer_value, question)
+        result_row["answer_value"] = normalized_value or BLANK_TOKEN
+        if structured.ref_id:
+            joined_ids = ",".join(f"'{rid}'" for rid in structured.ref_id)
+            result_row["ref_id"] = f"[{joined_ids}]"
+        else:
+            result_row["ref_id"] = BLANK_TOKEN
+        ref_url, supporting = build_ref_details(structured.ref_id, config.metadata)
+        result_row["ref_url"] = ref_url
+        result_row["supporting_materials"] = supporting
+        result_row["explanation"] = structured.explanation or BLANK_TOKEN
+
+    # Write result and print debug info
+    writer.writerow(ensure_columns(result_row, columns))
+    f_out.flush()
+
+    print("=== Single-run debug ===")
+    print(f"Question ID: {first_row.get('id')}")
+    print(f"Question: {question}")
+
+    for entry in attempts_log:
+        print(f"\n--- Attempt {entry['attempt']} (top_k={entry['top_k']}) ---")
+        print(f"is_blank: {entry['is_blank']}")
+        print("\nPrompt:\n")
+        print(entry["prompt"])
+        print("\nRaw model output:\n")
+        print(entry["raw"])
+        print("\nParsed structured answer:\n")
+        print(json.dumps(entry["parsed"], ensure_ascii=False, indent=2))
+
+
+# ============================================================================
+# STANDARD RUN MODE
+# ============================================================================
+
+
+async def run_all_questions(
+    rows: Sequence[Row],
+    columns: Sequence[str],
+    config: AppConfig,
+    pipeline: RAGPipeline,
+    writer: csv.DictWriter,
+    f_out,
+) -> None:
+    """Process all questions and write results as they complete."""
+    async for answer in answer_questions(rows, columns, config, pipeline):
+        writer.writerow(answer.row)
+        f_out.flush()
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+
+async def main() -> None:
+    """Main entry point: load data, create pipeline, process questions."""
     args = parse_args()
-    max_workers = max(1, args.max_workers)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     # Load input data
     rows, columns = load_questions(args.questions)
     metadata = load_metadata_records(args.metadata)
 
-    # Build immutable config for all workers
-    config = WorkerConfig(
+    # Build immutable config
+    config = AppConfig(
         db=args.db,
         table_prefix=args.table_prefix,
         model=args.model,
@@ -573,7 +717,11 @@ def main() -> None:
         planner_max_queries=args.planner_max_queries,
         metadata=metadata,
         max_retries=max(0, args.max_retries),
+        max_concurrent=args.max_concurrent,  # Allow 0 or negative to disable rate limiting
     )
+
+    # Create shared pipeline
+    pipeline = create_pipeline(config)
 
     with args.output.open("w", newline="", encoding="utf-8") as f_out:
         writer = csv.DictWriter(f_out, fieldnames=list(columns))
@@ -599,107 +747,14 @@ def main() -> None:
             else:
                 first_row = rows[0]
 
-            # Run the question with detailed logging
-            resources = _get_resources(config)
-            question = first_row["question"]
-            additional_info: dict[str, Any] = {
-                "answer_unit": (first_row.get("answer_unit") or "").strip(),
-                "question_id": first_row.get("id", "").strip(),
-            }
+            await run_single_question_debug(
+                first_row, columns, config, pipeline, writer, f_out
+            )
 
-            attempts_log: list[dict[str, Any]] = []
-            qa_result = None
-            structured = None
-            is_blank = True
-
-            # Retry with increasing context window
-            for attempt in range(config.max_retries + 1):
-                current_top_k = config.top_k * (attempt + 1)
-                qa_result = resources.pipeline.run_qa(
-                    question,
-                    system_prompt=ANSWER_SYSTEM_PROMPT,
-                    user_template=USER_PROMPT_TEMPLATE,
-                    additional_info=additional_info,
-                    top_k=current_top_k,
-                )
-                structured = qa_result.answer
-                is_blank = (
-                    structured.answer_value.strip().lower() == BLANK_TOKEN
-                    or not structured.ref_id
-                )
-                attempts_log.append(
-                    {
-                        "attempt": attempt + 1,
-                        "top_k": current_top_k,
-                        "is_blank": is_blank,
-                        "prompt": qa_result.prompt,
-                        "raw": qa_result.raw_response,
-                        "parsed": {
-                            "answer": structured.answer,
-                            "answer_value": structured.answer_value,
-                            "ref_id": structured.ref_id,
-                            "explanation": structured.explanation,
-                        },
-                    }
-                )
-
-                if not is_blank:
-                    break  # Got answer, stop retrying
-
-            assert qa_result is not None and structured is not None
-
-            # Format output row
-            result_row: Row = dict(first_row)
-
-            if is_blank:
-                result_row["answer"] = BLANK_TOKEN
-                result_row["answer_value"] = BLANK_TOKEN
-                result_row["ref_id"] = BLANK_TOKEN
-                result_row["ref_url"] = BLANK_TOKEN
-                result_row["supporting_materials"] = BLANK_TOKEN
-                result_row["explanation"] = BLANK_TOKEN
-            else:
-                result_row["answer"] = structured.answer or BLANK_TOKEN
-                normalized_value = normalize_answer_value(
-                    structured.answer_value, question
-                )
-                result_row["answer_value"] = normalized_value or BLANK_TOKEN
-                if structured.ref_id:
-                    joined_ids = ",".join(f"'{rid}'" for rid in structured.ref_id)
-                    result_row["ref_id"] = f"[{joined_ids}]"
-                else:
-                    result_row["ref_id"] = BLANK_TOKEN
-                ref_url, supporting = build_ref_details(
-                    structured.ref_id, config.metadata
-                )
-                result_row["ref_url"] = ref_url
-                result_row["supporting_materials"] = supporting
-                result_row["explanation"] = structured.explanation or BLANK_TOKEN
-
-            # Write result and print debug info
-            writer.writerow(ensure_columns(result_row, columns))
-            f_out.flush()
-
-            print("=== Single-run debug ===")
-            print(f"Question ID: {first_row.get('id')}")
-            print(f"Question: {question}")
-
-            for entry in attempts_log:
-                print(f"\n--- Attempt {entry['attempt']} (top_k={entry['top_k']}) ---")
-                print(f"is_blank: {entry['is_blank']}")
-                print("\nPrompt:\n")
-                print(entry["prompt"])
-                print("\nRaw model output:\n")
-                print(entry["raw"])
-                print("\nParsed structured answer:\n")
-                print(json.dumps(entry["parsed"], ensure_ascii=False, indent=2))
-
-        # NORMAL MODE: Process all questions with thread pool
+        # STANDARD MODE: Process all questions concurrently, streaming results
         else:
-            for answer in answer_questions(rows, columns, config, max_workers):
-                writer.writerow(answer.row)
-                f_out.flush()
+            await run_all_questions(rows, columns, config, pipeline, writer, f_out)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

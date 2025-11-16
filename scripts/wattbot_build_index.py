@@ -1,6 +1,7 @@
 """Build a KohakuVault-backed index for WattBot documents."""
 
 import argparse
+import asyncio
 import csv
 import json
 from pathlib import Path
@@ -67,7 +68,7 @@ def iter_documents(
 # ============================================================================
 
 
-def main() -> None:
+async def main() -> None:
     """Build the hierarchical index from documents."""
     parser = argparse.ArgumentParser(description="Build WattBot KohakuVault index.")
     parser.add_argument("--metadata", type=Path, default=Path("data/metadata.csv"))
@@ -114,7 +115,7 @@ def main() -> None:
         print(f"[{idx}/{total_docs}] indexing {payload.document_id}...", flush=True)
 
         # Build hierarchical tree and compute embeddings
-        nodes = indexer.index(payload)
+        nodes = await indexer.index(payload)
         if not nodes:
             print(f"  -> no nodes generated, skipping.", flush=True)
             continue
@@ -128,7 +129,7 @@ def main() -> None:
             )
 
         # Persist nodes to SQLite + sqlite-vec
-        store.upsert_nodes(nodes)
+        await store.upsert_nodes(nodes)
         total_nodes += len(nodes)
         print(
             f"  -> added {len(nodes)} nodes (running total {total_nodes})", flush=True
@@ -138,4 +139,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

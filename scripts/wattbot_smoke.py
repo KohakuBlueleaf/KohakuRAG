@@ -1,6 +1,7 @@
 """Minimal smoke test that indexes metadata citations and answers one question."""
 
 import argparse
+import asyncio
 import csv
 from pathlib import Path
 
@@ -30,7 +31,7 @@ def load_documents(metadata_path: Path):
     return documents
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="WattBot smoke test.")
     parser.add_argument(
         "--metadata",
@@ -49,10 +50,10 @@ def main() -> None:
     indexer = DocumentIndexer()
     pipeline = RAGPipeline()
     for payload in documents:
-        nodes = indexer.index(payload)
-        pipeline.index_documents(nodes)
+        nodes = await indexer.index(payload)
+        await pipeline.index_documents(nodes)
 
-    answer = pipeline.answer(args.question)
+    answer = await pipeline.answer(args.question)
     print("Question:", answer["question"])
     print("Response:\n", answer["response"])
     print("\nTop snippets:")
@@ -63,4 +64,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

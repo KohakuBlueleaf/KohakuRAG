@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import textwrap
 from pathlib import Path
 from typing import Sequence
@@ -76,7 +77,7 @@ def _compact_node_id(node_id: str, doc_id: str | None) -> str:
 # ============================================================================
 
 
-def main() -> None:
+async def main() -> None:
     """Run a demo query and display results."""
     parser = argparse.ArgumentParser(description="Query the WattBot KohakuVault index.")
     parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
@@ -94,7 +95,7 @@ def main() -> None:
     pipeline = RAGPipeline(store=store)
 
     # Execute retrieval
-    result = pipeline.retrieve(args.question, top_k=args.top_k)
+    result = await pipeline.retrieve(args.question, top_k=args.top_k)
 
     print(f"Question: {args.question}")
 
@@ -151,4 +152,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

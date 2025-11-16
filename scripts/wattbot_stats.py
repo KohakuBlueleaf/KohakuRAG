@@ -1,6 +1,7 @@
 """Report basic statistics for a KohakuVault-backed index."""
 
 import argparse
+import asyncio
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from kohakurag import NodeKind
 from kohakurag.datastore import KVaultNodeStore
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(description="Print stats for the WattBot index.")
     parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
     parser.add_argument("--table-prefix", default="wattbot")
@@ -28,7 +29,7 @@ def main() -> None:
             _, node_id = store._vectors.get_by_id(row_id)  # type: ignore[attr-defined]
             if isinstance(node_id, bytes):
                 node_id = node_id.decode()
-            node = store.get_node(node_id)
+            node = await store.get_node(node_id)
         except Exception:
             continue
         counters[node.kind] += 1
@@ -57,4 +58,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

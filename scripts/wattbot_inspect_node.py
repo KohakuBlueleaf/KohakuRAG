@@ -1,13 +1,14 @@
 """Inspect and optionally update a node stored in the WattBot index."""
 
 import argparse
+import asyncio
 from pathlib import Path
 
 from kohakurag import StoredNode
 from kohakurag.datastore import KVaultNodeStore
 
 
-def main() -> None:
+async def main() -> None:
     parser = argparse.ArgumentParser(
         description="Inspect a node from the WattBot index."
     )
@@ -20,7 +21,7 @@ def main() -> None:
     args = parser.parse_args()
 
     store = KVaultNodeStore(args.db, table_prefix=args.table_prefix, dimensions=None)
-    node = store.get_node(args.node_id)
+    node = await store.get_node(args.node_id)
 
     print(f"Node: {node.node_id}")
     print(f"Kind: {node.kind.value}")
@@ -45,9 +46,9 @@ def main() -> None:
             embedding=node.embedding,
             child_ids=node.child_ids,
         )
-        store.upsert_nodes([updated])
+        await store.upsert_nodes([updated])
         print("Appended note to metadata.dev_notes.")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
