@@ -42,16 +42,17 @@ python scripts/wattbot_answer.py \
     --table-prefix wattbot \
     --questions data/test_Q.csv \
     --output artifacts/wattbot_answers.csv \
-    --model gpt-5.1-mini \
+    --model gpt-4o-mini \
     --top-k 6 \
-    --max-workers 1 \
+    --max-concurrent 10 \
     --max-retries 3
 ```
 
-**Notes on TPM limits (e.g., `gpt-5.1-mini`):**
+**Notes on TPM limits (e.g., `gpt-4o-mini`):**
 
-- Lower TPM → use smaller `--max-workers` (often `1`), smaller `--top-k`, and possibly larger `max_retries` in `OpenAIChatModel`.
-- Higher TPM → you can safely increase `--max-workers` and `--top-k` for throughput.
+- Lower TPM → use smaller `--max-concurrent` (e.g., `5`), smaller `--top-k`, and possibly larger `max_retries` in `OpenAIChatModel`.
+- Higher TPM → you can safely increase `--max-concurrent` and `--top-k` for throughput.
+- Self-hosted → set `--max-concurrent 0` for unlimited concurrency.
 
 ---
 
@@ -79,10 +80,10 @@ python scripts/wattbot_answer.py \
     --output artifacts/wattbot_answers.csv \
     --model <your-vllm-model-name> \
     --top-k 6 \
-    --max-workers 2
+    --max-concurrent 0  # No rate limiting for local endpoint
 ```
 
-As long as vLLM implements the OpenAI Chat Completions protocol, `OpenAIChatModel` will work unchanged.
+As long as vLLM implements the OpenAI Chat Completions protocol, `OpenAIChatModel` will work unchanged. All scripts use async for efficient concurrent processing.
 
 ---
 
@@ -111,10 +112,10 @@ python scripts/wattbot_answer.py \
     --output artifacts/wattbot_answers.csv \
     --model <llama-model-name> \
     --top-k 6 \
-    --max-workers 2
+    --max-concurrent 0  # No rate limiting for local endpoint
 ```
 
-Again, no code changes are required—only the endpoint and model name differ.
+Again, no code changes are required—only the endpoint and model name differ. The async architecture efficiently handles concurrent requests.
 
 ---
 
@@ -157,22 +158,33 @@ all through a single OpenAI-compatible interface.
 The RAG pipeline only depends on the `ChatModel` protocol. In your own scripts, you can instantiate multiple `OpenAIChatModel` instances with different endpoints:
 
 ```python
+import asyncio
 from kohakurag.llm import OpenAIChatModel
+from kohakurag import RAGPipeline
 
-# Planner uses a fast/cheap model (maybe OpenAI or a small local model)
-planner_chat = OpenAIChatModel(
-    model="gpt-4o-mini",
-)
+async def main():
+    # Planner uses a fast/cheap model (maybe OpenAI or a small local model)
+    planner_chat = OpenAIChatModel(
+        model="gpt-4o-mini",
+        max_concurrent=20,
+    )
 
-# Answerer uses a larger or different backend via an OpenAI-compatible proxy
-answer_chat = OpenAIChatModel(
-    model="claude-3-opus",
-    base_url="https://your-proxy.example.com/v1",
-    api_key="proxy-api-key",
-)
+    # Answerer uses a larger or different backend via an OpenAI-compatible proxy
+    answer_chat = OpenAIChatModel(
+        model="claude-3-opus",
+        base_url="https://your-proxy.example.com/v1",
+        api_key="proxy-api-key",
+        max_concurrent=10,
+    )
+
+    # Use in pipeline
+    pipeline = RAGPipeline(chat_model=answer_chat, ...)
+    result = await pipeline.run_qa(...)
+
+asyncio.run(main())
 ```
 
-You can wire these into `RAGPipeline` as separate components, or continue to use the existing WattBot scripts and switch providers globally via `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and the `--model` flag.
+You can wire these into `RAGPipeline` as separate components, or continue to use the existing WattBot scripts and switch providers globally via `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and the `--model` flag. All operations are async for efficient concurrent processing.
 
 For more details on how the pipeline uses `ChatModel`, see `docs/architecture.md` and `docs/api_reference.md`.
 

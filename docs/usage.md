@@ -44,18 +44,18 @@ Run the full RAG pipeline (requires `OPENAI_API_KEY`) and produce a Kaggle-style
 - **Automatically handles OpenAI rate limits** with intelligent retry logic
 
 ```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/test_Q.csv --output artifacts/wattbot_answers.csv --model gpt-4o-mini --top-k 6 --max-workers 4 --max-retries 2
+python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/test_Q.csv --output artifacts/wattbot_answers.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2
 ```
 
 ### Key Flags
 
-- `--max-workers`: Number of questions to process in parallel (each worker has its own datastore + LLM client). **Tune based on your OpenAI rate limits**; `--max-workers 1` runs sequentially.
+- `--max-concurrent`: Maximum number of concurrent API requests (default: 10). **Tune based on your OpenAI rate limits**. Set to 0 for unlimited concurrency (self-hosted endpoints).
 - `--planner-model`: Optional model used to generate additional retrieval queries (defaults to `--model`).
 - `--planner-max-queries`: Total number of retrieval queries per question (original user question + LLM-generated queries).
 - `--metadata`: Path to `metadata.csv` (defaults to `data/metadata.csv`) for resolving `ref_url` and `supporting_materials`.
 - `--max-retries`: Number of extra attempts to make per question when the model returns `is_blank`, each time retrieving a larger set of snippets.
 
-The script writes each answered row to `--output` as soon as it finishes, so you can inspect partial results while a long run is still in progress.
+The script writes each answered row to `--output` as soon as it finishes (streaming results via async generator), so you can inspect partial results while a long run is still in progress.
 
 ### Rate Limit Handling
 
@@ -88,7 +88,7 @@ The script writes each answered row to `--output` as soon as it finishes, so you
 **Low TPM accounts (e.g., 500K TPM):**
 ```bash
 python scripts/wattbot_answer.py \
-    --max-workers 1 \      # Process sequentially
+    --max-concurrent 5 \   # Limit concurrent requests
     --model gpt-4o-mini \
     --top-k 4              # Reduce tokens per request
 ```
@@ -96,48 +96,67 @@ python scripts/wattbot_answer.py \
 **Higher TPM accounts (e.g., 2M+ TPM):**
 ```bash
 python scripts/wattbot_answer.py \
-    --max-workers 8 \      # More parallelism
+    --max-concurrent 20 \  # More concurrent requests
     --model gpt-4o \
+    --top-k 10
+```
+
+**Self-hosted or unlimited endpoints:**
+```bash
+python scripts/wattbot_answer.py \
+    --max-concurrent 0 \   # Unlimited concurrency
+    --model local-llama \
     --top-k 10
 ```
 
 **Customizing retry behavior in code:**
 ```python
+import asyncio
 from kohakurag.llm import OpenAIChatModel
 
-# More aggressive retries for restrictive limits
-chat = OpenAIChatModel(
-    model="gpt-4o-mini",
-    max_retries=10,          # Retry up to 10 times
-    base_retry_delay=2.0,    # Start with 2s instead of 1s
-)
+async def main():
+    # More aggressive retries for restrictive limits
+    chat = OpenAIChatModel(
+        model="gpt-4o-mini",
+        max_concurrent=5,        # Limit concurrent requests
+        max_retries=10,          # Retry up to 10 times
+        base_retry_delay=2.0,    # Start with 2s instead of 3s
+    )
+
+    response = await chat.complete("What is RAG?")
+
+asyncio.run(main())
 ```
 
 #### Best Practices
 
-1. **Start conservative**: Use `--max-workers 1` for your first run to understand your rate limits
+1. **Start conservative**: Use `--max-concurrent 5` for your first run to understand your rate limits
 2. **Monitor the logs**: Watch for retry messages to gauge how often you're hitting limits
-3. **Scale up gradually**: Increase `--max-workers` until you start seeing frequent retries, then back off
+3. **Scale up gradually**: Increase `--max-concurrent` until you start seeing frequent retries, then back off
 4. **Use batch processing windows**: Run large jobs during off-peak hours to maximize throughput
-5. **Switch backends via config**: To move from OpenAI-hosted models to self-hosted vLLM/llama.cpp or OpenAI-compatible proxies for Anthropic/Gemini, configure `OPENAI_BASE_URL` / `OPENAI_API_KEY` as described in `docs/deployment.md`.
+5. **Leverage async concurrency**: All scripts use `asyncio.gather()` for efficient concurrent processing
+6. **Switch backends via config**: To move from OpenAI-hosted models to self-hosted vLLM/llama.cpp or OpenAI-compatible proxies for Anthropic/Gemini, configure `OPENAI_BASE_URL` / `OPENAI_API_KEY` as described in `docs/deployment.md`.
 
 ## 7. Validate against the labeled training set
 Because the public `data/test_Q.csv` file has no answers, use `data/train_QA.csv` as a proxy leaderboard to measure progress locally:
 ```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/train_QA.csv --output artifacts/wattbot_train_preds.csv --model gpt-5-mini --top-k 6 --max-workers 4 --max-retries 2
+python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/train_QA.csv --output artifacts/wattbot_train_preds.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2
 
 python scripts/wattbot_validate.py --pred artifacts/wattbot_train_preds.csv --show-errors 5
 ```
 The first command runs the exact same pipeline as a test submission but over the labeled questions; the second command compares the predictions to the ground truth using the official WattBot scoring recipe (answer accuracy, citation overlap, and NA handling). Iterate here until the validation score looks good, then switch the `--questions` flag back to `data/test_Q.csv` to produce the submission file.
 
+All questions are processed concurrently via `asyncio.gather()`, with results streaming to the output file as they complete.
+
 ## 8. Single-question debug mode
 For debugging prompt/parse issues on a single row (for example, a specific id in `train_QA.csv`), use the `--single-run-debug` flag:
 ```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/train_QA.csv --output artifacts/wattbot_train_single.csv --model gpt-5-mini --top-k 6 --max-retries 2 --single-run-debug --question-id q054
+python scripts/wattbot_answer.py --db artifacts/wattbot.db --table-prefix wattbot --questions data/train_QA.csv --output artifacts/wattbot_train_single.csv --model gpt-4o-mini --top-k 6 --max-retries 2 --single-run-debug --question-id q054
 ```
 This mode:
 - Processes only one question from the input CSV (by default the first row, or the row whose `id` matches `--question-id`),
 - Logs every retry attempt with its `top_k` value,
 - Logs the exact user prompt sent to the model for each attempt,
 - Logs the raw model output and the parsed structured answer for each attempt,
+- Automatically handles context overflow (400 errors) by reducing `top_k` recursively,
 - Writes a single prediction row to `--output` so you can inspect all intermediate steps end-to-end.

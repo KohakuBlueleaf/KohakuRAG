@@ -43,6 +43,7 @@ OpenAIChatModel(
     max_retries: int = 5,
     base_retry_delay: float = 3.0,
     base_url: Optional[str] = None,
+    max_concurrent: int = 10,
 )
 ```
 
@@ -55,6 +56,7 @@ OpenAIChatModel(
 - `max_retries` (int, default: `5`): Maximum number of retry attempts on rate limit errors
 - `base_retry_delay` (float, default: `3.0`): Base delay in seconds for exponential backoff
 - `base_url` (Optional[str], default: `None`): Optional override for the API base URL (for example, `http://localhost:8000/v1` for self-hosted vLLM/llama.cpp or an OpenAI-compatible proxy). If omitted, falls back to the `OPENAI_BASE_URL` environment variable or `.env` file when present.
+- `max_concurrent` (int, default: `10`): Maximum number of concurrent API requests. Set to 0 or negative to disable rate limiting (unlimited concurrency).
 
 **Raises:**
 - `ImportError`: If `openai>=1.0.0` is not installed
@@ -62,9 +64,9 @@ OpenAIChatModel(
 
 #### Methods
 
-##### `complete(prompt: str, *, system_prompt: str | None = None) -> str`
+##### `async complete(prompt: str, *, system_prompt: str | None = None) -> str`
 
-Execute a chat completion request with automatic rate limit retry.
+Execute a chat completion request with automatic rate limit retry (async).
 
 **Parameters:**
 - `prompt` (str): User prompt to send to the model
@@ -75,41 +77,54 @@ Execute a chat completion request with automatic rate limit retry.
 
 **Raises:**
 - `openai.RateLimitError`: If rate limit persists after all retries
+- `openai.BadRequestError`: For context overflow or other 400 errors
 - `openai.OpenAIError`: For other API errors
 
 **Retry Behavior:**
 
 The method automatically handles rate limit errors using an intelligent retry strategy:
 
-1. **Server-recommended delays**: Parses error messages for suggested wait times (e.g., "Please try again in 23ms")
-2. **Exponential backoff**: Falls back to 3s, 6s, 12s, 24s, 48s... by default if no specific delay is provided (scaled by `base_retry_delay`)
-3. **Automatic retry**: Continues until success or `max_retries` is exhausted
+1. **Semaphore control**: Limits concurrent requests via `asyncio.Semaphore(max_concurrent)`
+2. **Server-recommended delays**: Parses error messages for suggested wait times (e.g., "Please try again in 23ms")
+3. **Exponential backoff**: Falls back to 3s, 6s, 12s, 24s, 48s... by default if no specific delay is provided (scaled by `base_retry_delay`)
+4. **Automatic retry**: Continues until success or `max_retries` is exhausted
 
 **Example:**
 
 ```python
+import asyncio
 from kohakurag.llm import OpenAIChatModel
 
-# Basic usage
-chat = OpenAIChatModel(model="gpt-4o-mini")
-response = chat.complete("Explain quantum computing in one sentence.")
+async def main():
+    # Basic usage
+    chat = OpenAIChatModel(model="gpt-4o-mini")
+    response = await chat.complete("Explain quantum computing in one sentence.")
 
-# Configure retry behavior for restrictive rate limits
-chat = OpenAIChatModel(
-    model="gpt-4o-mini",
-    max_retries=10,          # More retries for TPM-constrained accounts
-    base_retry_delay=2.0,    # Longer initial delay
-)
-response = chat.complete("What is the capital of France?")
+    # Configure concurrency and retry behavior
+    chat = OpenAIChatModel(
+        model="gpt-4o-mini",
+        max_concurrent=10,       # Max 10 concurrent requests
+        max_retries=10,          # More retries for TPM-constrained accounts
+        base_retry_delay=2.0,    # Longer initial delay
+    )
+    response = await chat.complete("What is the capital of France?")
 
-# Override system prompt per request
-chat = OpenAIChatModel(
-    system_prompt="You are a helpful assistant."
-)
-response = chat.complete(
-    "Explain RAG systems",
-    system_prompt="You are an expert in information retrieval."
-)
+    # Override system prompt per request
+    chat = OpenAIChatModel(
+        system_prompt="You are a helpful assistant."
+    )
+    response = await chat.complete(
+        "Explain RAG systems",
+        system_prompt="You are an expert in information retrieval."
+    )
+
+    # Batch processing with asyncio.gather()
+    questions = ["Q1", "Q2", "Q3"]
+    responses = await asyncio.gather(*[
+        chat.complete(q) for q in questions
+    ])
+
+asyncio.run(main())
 ```
 
 #### Rate Limit Handling Details
@@ -169,9 +184,9 @@ Returns the embedding dimension (1024 for Jina v3).
 
 #### Methods
 
-##### `embed(texts: Sequence[str]) -> numpy.ndarray`
+##### `async embed(texts: Sequence[str]) -> numpy.ndarray`
 
-Generate embeddings for a batch of texts.
+Generate embeddings for a batch of texts (async).
 
 **Parameters:**
 - `texts` (Sequence[str]): List of text strings to embed
@@ -182,28 +197,33 @@ Generate embeddings for a batch of texts.
 **Example:**
 
 ```python
+import asyncio
 from kohakurag.embeddings import JinaEmbeddingModel
 
-embedder = JinaEmbeddingModel()
+async def main():
+    embedder = JinaEmbeddingModel()
 
-# Single text
-embedding = embedder.embed(["Hello, world!"])
-print(embedding.shape)  # (1, 1024)
+    # Single text
+    embedding = await embedder.embed(["Hello, world!"])
+    print(embedding.shape)  # (1, 1024)
 
-# Batch embedding
-texts = [
-    "This is the first sentence.",
-    "This is the second sentence.",
-    "And a third one for good measure."
-]
-embeddings = embedder.embed(texts)
-print(embeddings.shape)  # (3, 1024)
+    # Batch embedding
+    texts = [
+        "This is the first sentence.",
+        "This is the second sentence.",
+        "And a third one for good measure."
+    ]
+    embeddings = await embedder.embed(texts)
+    print(embeddings.shape)  # (3, 1024)
+
+asyncio.run(main())
 ```
 
 **Performance Notes:**
 - First call downloads ~2GB model from Hugging Face
 - Automatically uses FP16 on CUDA/MPS for 2x speedup
 - Batch processing is more efficient than individual calls
+- Thread-safe via single-worker `ThreadPoolExecutor` (no manual locking needed)
 
 ---
 
@@ -232,56 +252,63 @@ KVaultNodeStore(
 
 #### Methods
 
-##### `insert(nodes: Sequence[StoredNode]) -> None`
+##### `async upsert_nodes(nodes: Sequence[StoredNode]) -> None`
 
-Insert nodes into the datastore.
+Insert or update nodes in the datastore (async).
 
 **Parameters:**
-- `nodes` (Sequence[StoredNode]): List of nodes to insert
+- `nodes` (Sequence[StoredNode]): List of nodes to upsert
 
-##### `search(query_vector: np.ndarray, top_k: int = 10) -> list[tuple[str, float]]`
+##### `async search(query_vector: np.ndarray, k: int = 5, kinds: set[NodeKind] | None = None) -> list[RetrievalMatch]`
 
-Search for nearest neighbors.
+Search for nearest neighbors (async).
 
 **Parameters:**
 - `query_vector` (np.ndarray): Query embedding vector
-- `top_k` (int, default: 10): Number of results to return
+- `k` (int, default: 5): Number of results to return
+- `kinds` (set[NodeKind] | None): Filter by node types
 
 **Returns:**
-- `list[tuple[str, float]]`: List of (node_id, similarity_score) pairs
+- `list[RetrievalMatch]`: List of matches with nodes and scores
 
-##### `get(node_id: str) -> StoredNode | None`
+##### `async get_node(node_id: str) -> StoredNode`
 
-Retrieve a node by ID.
+Retrieve a node by ID (async).
 
 **Parameters:**
 - `node_id` (str): Node identifier
 
 **Returns:**
-- `StoredNode | None`: Node object or `None` if not found
+- `StoredNode`: Node object
+
+**Raises:**
+- `KeyError`: If node not found
 
 **Example:**
 
 ```python
+import asyncio
 from kohakurag.datastore import KVaultNodeStore
 from kohakurag.embeddings import JinaEmbeddingModel
 
-# Create datastore
-store = KVaultNodeStore(
-    db_path="artifacts/my_index.db",
-    table_prefix="docs",
-    dimensions=1024,
-)
+async def main():
+    # Create datastore
+    store = KVaultNodeStore(
+        db_path="artifacts/my_index.db",
+        table_prefix="docs",
+        dimensions=1024,
+    )
 
-# Create embeddings
-embedder = JinaEmbeddingModel()
-query_embedding = embedder.embed(["How does RAG work?"])[0]
+    # Create embeddings
+    embedder = JinaEmbeddingModel()
+    query_embedding = (await embedder.embed(["How does RAG work?"]))[0]
 
-# Search
-results = store.search(query_embedding, top_k=5)
-for node_id, score in results:
-    node = store.get(node_id)
-    print(f"[{score:.3f}] {node.text[:100]}...")
+    # Search
+    results = await store.search(query_embedding, k=5)
+    for match in results:
+        print(f"[{match.score:.3f}] {match.node.text[:100]}...")
+
+asyncio.run(main())
 ```
 
 ---
@@ -313,9 +340,21 @@ RAGPipeline(
 
 #### Methods
 
-##### `run_qa(...) -> QAResult`
+##### `async index_documents(documents: Iterable[StoredNode]) -> None`
 
-Execute a complete question-answering pipeline.
+Bulk insert pre-built nodes into the store (async).
+
+##### `async retrieve(question: str, *, top_k: int | None = None) -> RetrievalResult`
+
+Execute multi-query retrieval with hierarchical context expansion (async).
+
+##### `async answer(question: str) -> dict`
+
+Simple QA: retrieve + prompt + generate (async).
+
+##### `async run_qa(...) -> StructuredAnswerResult`
+
+Execute a complete question-answering pipeline (async).
 
 **Parameters:**
 - `question` (str): User question
@@ -325,41 +364,57 @@ Execute a complete question-answering pipeline.
 - `top_k` (int, default: 5): Number of snippets to retrieve
 
 **Returns:**
-- `QAResult`: Object containing:
+- `StructuredAnswerResult`: Object containing:
   - `answer`: Structured answer object
   - `raw_response`: Raw LLM output
   - `prompt`: Final prompt sent to LLM
+  - `retrieval`: Retrieval result with matches and snippets
 
 **Example:**
 
 ```python
+import asyncio
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
 from kohakurag.embeddings import JinaEmbeddingModel
 from kohakurag.llm import OpenAIChatModel
 
-# Initialize components
-store = KVaultNodeStore("artifacts/index.db")
-embedder = JinaEmbeddingModel()
-chat = OpenAIChatModel(model="gpt-4o-mini", max_retries=5)
+async def main():
+    # Initialize components
+    store = KVaultNodeStore("artifacts/index.db")
+    embedder = JinaEmbeddingModel()
+    chat = OpenAIChatModel(model="gpt-4o-mini", max_concurrent=10, max_retries=5)
 
-# Create pipeline
-pipeline = RAGPipeline(
-    store=store,
-    embedder=embedder,
-    chat_model=chat,
-)
+    # Create pipeline
+    pipeline = RAGPipeline(
+        store=store,
+        embedder=embedder,
+        chat_model=chat,
+    )
 
-# Run Q&A
-result = pipeline.run_qa(
-    question="What is the water consumption of GPT-3 training?",
-    system_prompt="Answer based only on the provided context.",
-    user_template="Question: {question}\n\nContext:\n{context}\n\nAnswer:",
-    top_k=6,
-)
+    # Run Q&A
+    result = await pipeline.run_qa(
+        question="What is the water consumption of GPT-3 training?",
+        system_prompt="Answer based only on the provided context.",
+        user_template="Question: {question}\n\nContext:\n{context}\n\nAnswer:",
+        top_k=6,
+    )
 
-print(result.answer.answer_value)
-print(result.answer.explanation)
+    print(result.answer.answer_value)
+    print(result.answer.explanation)
+
+    # Batch processing with asyncio.gather()
+    questions = ["Q1", "Q2", "Q3"]
+    results = await asyncio.gather(*[
+        pipeline.run_qa(
+            question=q,
+            system_prompt="Answer based on context.",
+            user_template="Q: {question}\nContext: {context}\nA:",
+        )
+        for q in questions
+    ])
+
+asyncio.run(main())
 ```
 
 ---
@@ -459,32 +514,42 @@ DocumentIndexer(
 
 #### Methods
 
-##### `index_document(payload: DocumentPayload) -> None`
+##### `async index(payload: DocumentPayload) -> list[StoredNode]`
 
-Index a single document payload.
+Index a single document payload (async).
 
 **Parameters:**
 - `payload` (DocumentPayload): Structured document to index
 
+**Returns:**
+- `list[StoredNode]`: List of storable nodes with embeddings
+
 **Example:**
 
 ```python
+import asyncio
 from kohakurag.indexer import DocumentIndexer
 from kohakurag.datastore import KVaultNodeStore
 from kohakurag.embeddings import JinaEmbeddingModel
 from kohakurag.pdf_utils import pdf_to_document_payload
 
-# Setup
-embedder = JinaEmbeddingModel()
-store = KVaultNodeStore("artifacts/index.db", dimensions=1024)
-indexer = DocumentIndexer(embedder=embedder, store=store)
+async def main():
+    # Setup
+    embedder = JinaEmbeddingModel()
+    store = KVaultNodeStore("artifacts/index.db", dimensions=1024)
+    indexer = DocumentIndexer(embedder)
 
-# Index a document
-payload = pdf_to_document_payload(
-    pdf_path="papers/bert.pdf",
-    metadata={"id": "bert2018", "title": "BERT"},
-)
-indexer.index_document(payload)
+    # Index a document
+    payload = pdf_to_document_payload(
+        pdf_path="papers/bert.pdf",
+        doc_id="bert2018",
+        title="BERT",
+        metadata={"year": 2018},
+    )
+    nodes = await indexer.index(payload)
+    await store.upsert_nodes(nodes)
+
+asyncio.run(main())
 ```
 
 ---
@@ -520,39 +585,47 @@ except ValueError as e:
 
 ---
 
-## Thread Safety
+## Async Concurrency
 
-### Thread-Safe Components
+### Async-Safe Components
 
-- `JinaEmbeddingModel`: Uses locks for concurrent embedding calls
-- `KVaultNodeStore`: SQLite with thread-safe connections
-- `OpenAIChatModel`: Each instance maintains its own client (thread-safe)
+All I/O operations in KohakuRAG are async:
+
+- `JinaEmbeddingModel`: Thread-safe via single-worker `ThreadPoolExecutor`
+- `KVaultNodeStore`: Thread-safe via single-worker `ThreadPoolExecutor` for SQLite operations
+- `OpenAIChatModel`: Async with semaphore-based concurrency control
 
 ### Concurrent Processing Example
 
 ```python
-import concurrent.futures
+import asyncio
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
 from kohakurag.embeddings import JinaEmbeddingModel
 from kohakurag.llm import OpenAIChatModel
 
-# Shared embedder with thread-safe access
-embedder = JinaEmbeddingModel()
-
-def process_question(question: str) -> str:
-    # Each worker gets its own store and chat client
+async def main():
+    # Create shared pipeline (all components are async-safe)
     store = KVaultNodeStore("artifacts/index.db")
-    chat = OpenAIChatModel(max_retries=5)
+    embedder = JinaEmbeddingModel()
+    chat = OpenAIChatModel(max_concurrent=10, max_retries=5)
     pipeline = RAGPipeline(store=store, embedder=embedder, chat_model=chat)
 
-    result = pipeline.run_qa(question, ...)
-    return result.answer.answer_value
+    # Concurrent batch processing
+    questions = ["Q1", "Q2", "Q3", ...]
+    results = await asyncio.gather(*[
+        pipeline.run_qa(
+            question=q,
+            system_prompt="You are a helpful assistant.",
+            user_template="Question: {question}\nContext: {context}\nAnswer:",
+        )
+        for q in questions
+    ])
 
-questions = ["Q1", "Q2", "Q3", ...]
+    for result in results:
+        print(result.answer.answer_value)
 
-with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-    answers = list(executor.map(process_question, questions))
+asyncio.run(main())
 ```
 
 ---
@@ -574,17 +647,23 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
 1. **Start with conservative settings:**
    ```python
    chat = OpenAIChatModel(
+       max_concurrent=5,        # Limit concurrent requests
        max_retries=10,
        base_retry_delay=2.0,
    )
    ```
 
-2. **Reduce parallel workers when hitting limits:**
+2. **Adjust concurrency when hitting limits:**
    ```bash
-   python scripts/wattbot_answer.py --max-workers 2  # Instead of 4
+   python scripts/wattbot_answer.py --max-concurrent 5  # Reduce from default 10
    ```
 
-3. **Monitor retry messages in logs:**
+3. **Disable rate limiting for self-hosted endpoints:**
+   ```bash
+   python scripts/wattbot_answer.py --max-concurrent 0  # Unlimited
+   ```
+
+4. **Monitor retry messages in logs:**
    ```
    Rate limit hit (attempt 1/11). Waiting 0.12s before retry...
    ```
@@ -599,10 +678,15 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
 2. **Batch embed for efficiency:**
    ```python
    # Good: batch embedding
-   embeddings = embedder.embed(all_texts)
+   embeddings = await embedder.embed(all_texts)
 
-   # Bad: individual calls
-   embeddings = [embedder.embed([text])[0] for text in all_texts]
+   # Bad: individual calls in sequence
+   embeddings = [await embedder.embed([text])[0] for text in all_texts]
+
+   # Better: concurrent individual calls (if needed)
+   embeddings = await asyncio.gather(*[
+       embedder.embed([text]) for text in all_texts
+   ])
    ```
 
 ### Datastore Management

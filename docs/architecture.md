@@ -60,21 +60,27 @@ The `OpenAIChatModel` class provides production-ready OpenAI integration with in
 **Implementation Details:**
 ```python
 # In src/kohakurag/llm.py
-def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
+async def complete(self, prompt: str, *, system_prompt: str | None = None) -> str:
     for attempt in range(self._max_retries + 1):
         try:
-            return self._client.chat.completions.create(...)
+            # Semaphore controls concurrency (if enabled)
+            if self._semaphore is not None:
+                async with self._semaphore:
+                    return await self._client.chat.completions.create(...)
+            else:
+                return await self._client.chat.completions.create(...)
         except RateLimitError as e:
             wait_time = self._parse_retry_after(error_msg) or (self._base_retry_delay * (2 ** attempt))
             print(f"Rate limit hit (attempt {attempt + 1}). Waiting {wait_time:.2f}s...")
-            time.sleep(wait_time)
+            await asyncio.sleep(wait_time)
 ```
 
-This design ensures that:
+This async design ensures that:
 1. **No manual intervention** – scripts continue running despite rate limits
-2. **Optimal throughput** – uses server-recommended delays instead of arbitrary waits
-3. **Cost efficiency** – avoids token waste from failed requests
-4. **Monitoring friendly** – prints clear retry messages for observability
+2. **Efficient concurrency** – semaphore controls concurrent requests without threading complexity
+3. **Optimal throughput** – uses server-recommended delays instead of arbitrary waits
+4. **Cost efficiency** – avoids token waste from failed requests
+5. **Monitoring friendly** – prints clear retry messages for observability
 
 ## Development workflow
 1. **Document staging** – convert PDFs or external data into structured payloads (optionally via Markdown/JSON intermediates) with per-section text and captions.

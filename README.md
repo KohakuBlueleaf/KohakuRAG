@@ -52,8 +52,9 @@ While we demonstrate KohakuRAG with the WattBot 2025 dataset, **the core library
 - Add your own LLM backend by implementing the `ChatModel` protocol
 
 ### 🛡️ Production-Ready Features
-- **Automatic rate limit handling** with intelligent retry logic
-- **Concurrent processing** with thread-safe embedding and datastore access
+- **Async/await architecture** for efficient concurrent I/O
+- **Automatic rate limit handling** with intelligent retry logic and semaphore-based concurrency control
+- **Thread-safe operations** via single-worker executors for embedding and datastore access
 - **Structured logging** for debugging and monitoring
 - **Validation scripts** for measuring accuracy before deployment
 
@@ -78,6 +79,42 @@ pip install -e .
 
 ### Basic Usage
 
+#### Programmatic Usage (Async)
+
+```python
+import asyncio
+from kohakurag import RAGPipeline, OpenAIChatModel, JinaEmbeddingModel, InMemoryNodeStore
+
+async def main():
+    # Initialize components
+    chat = OpenAIChatModel(model="gpt-4o-mini", max_concurrent=10)
+    embedder = JinaEmbeddingModel()
+    store = InMemoryNodeStore()
+    pipeline = RAGPipeline(chat=chat, embedder=embedder, store=store)
+
+    # Index documents (async I/O)
+    await pipeline.index_documents(documents)
+
+    # Single query
+    result = await pipeline.run_qa(
+        query="What is RAG?",
+        system_prompt="You are a helpful assistant.",
+        user_template="Context: {context}\n\nQuestion: {question}\n\nAnswer:",
+    )
+    print(result)
+
+    # Batch queries with concurrent execution
+    questions = ["Q1", "Q2", "Q3", ...]
+    results = await asyncio.gather(*[
+        pipeline.run_qa(query=q, system_prompt="...", user_template="...")
+        for q in questions
+    ])
+
+asyncio.run(main())
+```
+
+#### CLI Scripts
+
 ```bash
 # 1. Prepare your documents (PDF/Markdown/Text)
 # Place them in a directory or use the WattBot example below
@@ -99,27 +136,58 @@ python scripts/wattbot_answer.py \
     --db artifacts/index.db \
     --questions data/questions.csv \
     --output artifacts/answers.csv \
-    --model gpt-4o-mini
+    --model gpt-4o-mini \
+    --max-concurrent 10  # Control API rate (0 = unlimited)
 ```
 
-### Rate Limit Handling
+### Rate Limit Handling & Async Concurrency
 
-KohakuRAG **automatically handles OpenAI rate limits**:
+KohakuRAG uses **async/await** for efficient concurrent I/O and **automatically handles OpenAI rate limits**:
+
+**Semaphore-based rate limiting:**
+- Built-in `asyncio.Semaphore` limits concurrent API requests
+- Configure via `max_concurrent` parameter (default: 10)
+- No complex threading or manual locks needed
+
+**Intelligent retry logic:**
 - Parses server-recommended retry delays from error messages
 - Falls back to exponential backoff (1s, 2s, 4s, 8s, 16s...)
 - Configurable via `max_retries` and `base_retry_delay` parameters
 - Works with restrictive TPM (tokens per minute) limits
-- Can be pointed at any **OpenAI-compatible endpoint** (including self-hosted vLLM/llama.cpp or proxies for Anthropic/Gemini) via `OPENAI_BASE_URL` or the `base_url` argument
+
+**OpenAI-compatible endpoints:**
+- Can be pointed at any OpenAI-compatible endpoint (vLLM/llama.cpp/Anthropic/Gemini proxies)
+- Configure via `OPENAI_BASE_URL` environment variable or `base_url` argument
 
 ```python
+import asyncio
 from kohakurag.llm import OpenAIChatModel
 
-# Configure retry behavior
-chat = OpenAIChatModel(
-    model="gpt-4o-mini",
-    max_retries=5,           # Retry up to 5 times
-    base_retry_delay=1.0     # Start with 1s delay
-)
+async def main():
+    # Configure concurrency and retry behavior
+    chat = OpenAIChatModel(
+        model="gpt-4o-mini",
+        max_concurrent=10,       # Max 10 concurrent requests
+        max_retries=5,           # Retry up to 5 times on rate limit
+        base_retry_delay=1.0     # Start with 1s delay
+    )
+
+    # Disable rate limiting for unlimited concurrency
+    chat_unlimited = OpenAIChatModel(
+        model="gpt-4o-mini",
+        max_concurrent=0         # 0 or negative = no rate limit
+    )
+
+    # All API calls are async
+    response = await chat.complete("What is RAG?")
+
+    # Concurrent batch processing with asyncio.gather()
+    questions = ["Q1", "Q2", "Q3"]
+    responses = await asyncio.gather(*[
+        chat.complete(q) for q in questions
+    ])
+
+asyncio.run(main())
 ```
 
 For details on configuring different backends (OpenAI, vLLM, llama.cpp, or OpenAI-compatible proxies), see `docs/deployment.md`.
@@ -166,8 +234,8 @@ python scripts/wattbot_answer.py \
     --output artifacts/wattbot_answers.csv \
     --model gpt-4o-mini \
     --top-k 6 \
-    --max-workers 4 \
-    --max-retries 2
+    --max-retries 2 \
+    --max-concurrent 10
 
 # 5. Validate against training set (optional)
 python scripts/wattbot_answer.py \
@@ -181,10 +249,12 @@ python scripts/wattbot_validate.py \
 ```
 
 **Key Parameters:**
-- `--max-workers`: Number of parallel workers (tune based on your rate limits)
-- `--max-retries`: Extra attempts when model returns blank answers
 - `--top-k`: Number of context snippets to retrieve per query
+- `--max-retries`: Extra attempts when model returns blank answers
 - `--planner-max-queries`: Total retrieval queries per question (original + LLM-generated)
+- `--max-concurrent`: Maximum concurrent API requests (default: 10, set to 0 for unlimited)
+  - Controls OpenAI API rate limiting via semaphore
+  - All scripts use `asyncio.gather()` for efficient concurrent processing
 
 See [`docs/wattbot.md`](docs/wattbot.md) and [`docs/usage.md`](docs/usage.md) for advanced usage patterns.
 
@@ -253,8 +323,9 @@ For detailed architecture documentation, see [`docs/architecture.md`](docs/archi
 
 ### Requirements
 - Python 3.10+ (uses modern type hints: `list[str]`, `dict[str, Any]`)
-- Dependencies: `torch`, `transformers`, `kohakuvault`, `pypdf`, `requests`, `openai`
+- Dependencies: `torch`, `transformers`, `kohakuvault`, `pypdf`, `httpx`, `openai`
 - Jina embeddings (~2GB) downloaded on first run — set `HF_HOME` for custom cache location
+- All core operations use async/await for efficient I/O
 
 ### Running Tests
 ```bash
@@ -302,9 +373,25 @@ KohakuRAG/
 **Problem:** `openai.RateLimitError: Rate limit reached for gpt-4o-mini`
 
 **Solution:** The retry mechanism handles this automatically. If you still see errors:
-1. Reduce `--max-workers` to decrease parallel requests
-2. Increase `max_retries` in `OpenAIChatModel` constructor
+1. Reduce `max_concurrent` parameter in `OpenAIChatModel` constructor (default: 10)
+2. Increase `max_retries` in `OpenAIChatModel` constructor (default: 5)
 3. Consider using a higher-tier OpenAI plan for increased TPM limits
+
+Example:
+```python
+# Reduce concurrency to avoid rate limits
+chat = OpenAIChatModel(
+    model="gpt-4o-mini",
+    max_concurrent=5,  # Reduce concurrent requests
+    max_retries=10     # More retry attempts
+)
+
+# Or disable rate limiting entirely (use with caution)
+chat = OpenAIChatModel(
+    model="gpt-4o-mini",
+    max_concurrent=0   # Unlimited concurrency
+)
+```
 
 ### Embedding Model Download Issues
 **Problem:** Slow or failed Jina model download

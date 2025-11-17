@@ -49,8 +49,10 @@ The validation script compares your predictions to the ground truth using the of
 
 ### OpenAI Configuration
 - Set `OPENAI_API_KEY` for production runs. The scripts automatically choose the OpenAI chat backend when the key is available; otherwise they fall back to a lightweight mock useful for unit tests.
-- **Rate limit handling is automatic** — the `OpenAIChatModel` class includes intelligent retry logic that:
-  - Parses server-recommended wait times from error messages
+- **Async/await architecture** — all I/O operations (API calls, embeddings, database) use async for efficient concurrent processing
+- **Rate limit handling is automatic** — the `OpenAIChatModel` class includes:
+  - Semaphore-based concurrency control via `max_concurrent` parameter
+  - Intelligent retry logic that parses server-recommended wait times
   - Falls back to exponential backoff if no specific delay is provided
   - Prints clear retry messages for monitoring
   - Continues processing without manual intervention
@@ -59,15 +61,21 @@ The validation script compares your predictions to the ground truth using the of
 ```bash
 # For 500K TPM accounts (common for gpt-4o-mini)
 python scripts/wattbot_answer.py \
-    --max-workers 1 \         # Sequential to avoid hitting TPM
+    --max-concurrent 5 \      # Limit concurrent API requests
     --model gpt-4o-mini \
     --top-k 6
 
-# For higher TPM accounts
+# For higher TPM accounts or self-hosted endpoints
 python scripts/wattbot_answer.py \
-    --max-workers 4 \         # Parallel processing
+    --max-concurrent 20 \     # More concurrent requests
     --model gpt-4o-mini \
     --top-k 8
+
+# For unlimited concurrency (use with caution)
+python scripts/wattbot_answer.py \
+    --max-concurrent 0 \      # No rate limiting
+    --model gpt-4o-mini \
+    --top-k 6
 ```
 
 ### Embedding Configuration
