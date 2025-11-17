@@ -381,6 +381,9 @@ async def _answer_single_row(
         retry_count: If 0, skip blank retries. If None, use config.max_retries.
         override_top_k: If provided, use this instead of config.top_k as base.
     """
+    if override_top_k is not None and override_top_k <= 0:
+        raise ValueError(f"override_top_k={override_top_k} must be > 0")
+
     question = row["question"]
     additional_info: dict[str, Any] = {
         "answer_unit": (row.get("answer_unit") or "").strip(),
@@ -420,16 +423,6 @@ async def _answer_single_row(
             error_msg = str(e).lower()
             if "context length" in error_msg or "maximum context" in error_msg:
                 reduced_top_k = current_top_k - 1
-                if reduced_top_k < 1:
-                    print(
-                        f"Context overflow for {additional_info['question_id']}, minimum top_k=1 failed, returning blank"
-                    )
-                    break
-
-                print(
-                    f"Context overflow for {additional_info['question_id']}, recursively retrying with top_k={reduced_top_k}"
-                )
-                # Recursively retry with reduced top_k and no blank retries
                 return await _answer_single_row(
                     idx,
                     row,
@@ -441,6 +434,17 @@ async def _answer_single_row(
                 )
             else:
                 raise  # Not a context overflow error
+        except json.decoder.JSONDecodeError:
+            reduced_top_k = current_top_k - 1
+            return await _answer_single_row(
+                idx,
+                row,
+                columns,
+                config,
+                pipeline,
+                retry_count=0,
+                override_top_k=reduced_top_k,
+            )
 
     # Create blank result if we don't have a valid answer
     if qa_result is None or structured is None:
