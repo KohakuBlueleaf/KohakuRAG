@@ -222,6 +222,20 @@ class KVaultNodeStore(HierarchicalNodeStore):
         self._vectors.enable_auto_pack()
         self._metric = metric
 
+        # Optional: image-only vector table (created by wattbot_build_image_index.py)
+        self._image_vectors = None
+        try:
+            self._image_vectors = VectorKVault(
+                self._path,
+                table=f"{table_prefix}_images_vec",
+                dimensions=self._dimensions,
+                metric=metric,
+            )
+            self._image_vectors.enable_auto_pack()
+        except Exception:
+            # Image-only table doesn't exist - that's fine, it's optional
+            pass
+
         # Single-worker executor for thread-safe async SQLite operations
         self._executor = ThreadPoolExecutor(max_workers=1)
 
@@ -320,6 +334,71 @@ class KVaultNodeStore(HierarchicalNodeStore):
         return await loop.run_in_executor(
             self._executor, self._sync_search, query_vector, k, kinds
         )
+
+    def _sync_search_images(
+        self,
+        query_vector: np.ndarray,
+        k: int,
+    ) -> list[RetrievalMatch]:
+        """Search image-only vector table (synchronous, called via executor)."""
+        if query_vector.ndim != 1:
+            raise ValueError("query_vector must be a 1D numpy array.")
+
+        if self._image_vectors is None:
+            # No image-only table - return empty
+            return []
+
+        # Query image-only index
+        results = self._image_vectors.search(
+            query_vector.astype(np.float32),
+            k=k,
+        )
+
+        # Fetch full nodes
+        matches: list[RetrievalMatch] = []
+        for row_id, distance, node_id in results:
+            try:
+                node = self._sync_get_node(node_id)
+
+                # Convert distance to similarity score
+                score = (
+                    1.0 - float(distance)
+                    if self._metric == "cosine"
+                    else -float(distance)
+                )
+                matches.append(RetrievalMatch(node=node, score=score))
+            except Exception:
+                continue
+
+        matches.sort(key=lambda item: item.score, reverse=True)
+        return matches[:k]
+
+    async def search_images(
+        self,
+        query_vector: np.ndarray,
+        *,
+        k: int = 5,
+    ) -> list[RetrievalMatch]:
+        """Search ONLY image caption nodes using dedicated image vector table.
+
+        This requires the image-only index to be built first via
+        wattbot_build_image_index.py. If the table doesn't exist, returns empty list.
+
+        Args:
+            query_vector: Query embedding
+            k: Number of image results to return
+
+        Returns:
+            List of image node matches (sorted by score)
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor, self._sync_search_images, query_vector, k
+        )
+
+    def has_image_index(self) -> bool:
+        """Check if image-only vector table exists."""
+        return self._image_vectors is not None
 
     def _sync_get_context(
         self,
@@ -485,3 +564,124 @@ async def matches_to_snippets(
                 )
             )
     return snippets
+
+
+class ImageStore:
+    """Simple key-value store for compressed image blobs.
+
+    Uses KohakuVault for storage in same database file as nodes.
+    Key format: img:{doc_id}:p{page}:i{idx}
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        table: str = "image_blobs",
+    ) -> None:
+        """Initialize or open existing image store.
+
+        Args:
+            path: SQLite database file path (same as node store)
+            table: Table name for image storage
+        """
+        self._path = str(path)
+        self._kv = KVault(self._path, table=table)
+        self._kv.enable_auto_pack()
+
+        # Single-worker executor for thread-safe async operations
+        self._executor = ThreadPoolExecutor(max_workers=1)
+
+    def __del__(self) -> None:
+        """Cleanup executor on deletion."""
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=False)
+
+    @staticmethod
+    def make_key(doc_id: str, page: int, index: int) -> str:
+        """Generate storage key for an image.
+
+        Args:
+            doc_id: Document identifier
+            page: Page number (1-indexed)
+            index: Image index on page (1-indexed)
+
+        Returns:
+            Storage key string
+        """
+        return f"img:{doc_id}:p{page}:i{index}"
+
+    def _sync_store(self, key: str, data: bytes) -> None:
+        """Synchronous store logic (called via executor)."""
+        self._kv[key] = data
+
+    async def store_image(self, key: str, data: bytes) -> None:
+        """Store image bytes.
+
+        Args:
+            key: Storage key (use make_key() to generate)
+            data: Compressed image bytes (webp recommended)
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self._executor, self._sync_store, key, data)
+
+    def _sync_get(self, key: str) -> bytes | None:
+        """Synchronous get logic (called via executor)."""
+        try:
+            return self._kv[key]
+        except KeyError:
+            return None
+
+    async def get_image(self, key: str) -> bytes | None:
+        """Retrieve image bytes.
+
+        Args:
+            key: Storage key
+
+        Returns:
+            Image bytes or None if not found
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self._sync_get, key)
+
+    def _sync_exists(self, key: str) -> bool:
+        """Synchronous exists check (called via executor)."""
+        try:
+            _ = self._kv[key]
+            return True
+        except KeyError:
+            return False
+
+    async def exists(self, key: str) -> bool:
+        """Check if image exists.
+
+        Args:
+            key: Storage key
+
+        Returns:
+            True if image exists
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self._sync_exists, key)
+
+    def _sync_list_keys(self, prefix: str) -> list[str]:
+        """Synchronous list keys logic (called via executor)."""
+        # KohakuVault doesn't have a native prefix scan, so we scan all keys
+        # This is acceptable since image counts are typically small
+        all_keys = []
+        for key in self._kv.keys():
+            if key.startswith(prefix):
+                all_keys.append(key)
+        return all_keys
+
+    async def list_images(self, prefix: str = "img:") -> list[str]:
+        """List all image keys with given prefix.
+
+        Args:
+            prefix: Key prefix to filter (default: "img:")
+
+        Returns:
+            List of matching keys
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self._sync_list_keys, prefix)
