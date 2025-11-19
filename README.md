@@ -260,6 +260,117 @@ See [`docs/wattbot.md`](docs/wattbot.md) and [`docs/usage.md`](docs/usage.md) fo
 
 ---
 
+## 🖼️ Image Captioning for Multimodal RAG
+
+KohakuRAG supports **vision model integration** to extract and caption images from PDFs, enabling multimodal retrieval.
+
+### Why Add Image Captions?
+
+Many technical documents (research papers, reports, presentations) contain critical information in figures, charts, and diagrams. By generating AI captions for these images, you can:
+- **Improve answer accuracy** for questions about visual data
+- **Retrieve figure context** alongside text
+- **Compare performance** of text-only vs. image-enhanced RAG
+
+### Quick Start
+
+#### 1. Set Up OpenRouter (Recommended)
+
+```bash
+# Get API key from https://openrouter.ai
+export OPENAI_API_KEY="sk-or-v1-..."
+export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+```
+
+**Recommended model**: `qwen/qwen3-vl-235b-a22b-instruct` (cost-effective, good quality)
+
+#### 2. Generate Image Captions
+
+```bash
+python scripts/wattbot_add_image_captions.py \
+    --docs-dir artifacts/docs \
+    --pdf-dir artifacts/raw_pdfs \
+    --output-dir artifacts/docs_with_images \
+    --db artifacts/wattbot_with_images.db \
+    --vision-model qwen/qwen3-vl-235b-a22b-instruct \
+    --limit 10  # Test with 10 documents first
+```
+
+**What it does** (3-phase parallel processing):
+- **Phase 1**: Reads ALL images from ALL PDFs concurrently
+- **Phase 2**: Compresses ALL images to JPEG (≤1024px, 95% quality) in parallel
+- **Phase 3**: Generates captions for ALL images concurrently via vision API
+- **Phase 4**: Stores images + updates JSONs with format: `[img:name WxH] caption...`
+- All images stored in SAME database that will hold RAG nodes
+
+#### 3. Build Separate Indices
+
+```bash
+# Text-only index (baseline)
+python scripts/wattbot_build_index.py \
+    --docs-dir artifacts/docs \
+    --db artifacts/wattbot_text_only.db
+
+# Image-enhanced index
+python scripts/wattbot_build_index.py \
+    --docs-dir artifacts/docs_with_images \
+    --db artifacts/wattbot_with_images.db
+```
+
+#### 4. Compare Performance
+
+```bash
+# Query with text-only
+python scripts/wattbot_answer.py \
+    --db artifacts/wattbot_text_only.db \
+    --questions data/test_Q.csv \
+    --output artifacts/text_only_answers.csv
+
+# Query with images
+python scripts/wattbot_answer.py \
+    --db artifacts/wattbot_with_images.db \
+    --questions data/test_Q.csv \
+    --output artifacts/with_images_answers.csv \
+    --with-images  # Enable image-aware retrieval
+
+# Validate both
+python scripts/wattbot_validate.py --pred artifacts/text_only_answers.csv
+python scripts/wattbot_validate.py --pred artifacts/with_images_answers.csv
+```
+
+### Image Format in Prompts
+
+When `--with-images` is enabled, retrieved context includes a separate "Referenced media" section:
+
+```
+Context snippets:
+[ref_id=amazon2023] Text about AWS sustainability...
+---
+[ref_id=google2024] Information about data center cooling...
+
+Referenced media:
+[ref_id=nvidia2024] [img:Figure3 800x600] Bar chart showing GPU power consumption trends from 2020-2024, with NVIDIA A100 at 400W and H100 at 700W peak.
+
+[ref_id=amazon2023] [img:Fig5 1200x900] Diagram of water cooling system architecture with labeled components: heat exchangers, cooling towers, and water treatment facilities.
+```
+
+### Configuration Options
+
+**Vision Models** (via OpenRouter or OpenAI):
+- `qwen/qwen3-vl-235b-a22b-instruct` (recommended, ~$0.50 per 1K images)
+- `gpt-4o` (best quality, ~$2.50 per 1K images)
+- `gpt-4o-mini` (fast, ~$0.15 per 1K images)
+
+**Storage**:
+- **Same database file**: Images stored in same `.db` as RAG nodes (table: `image_blobs`)
+  - `wattbot_with_images.db` contains BOTH nodes AND compressed images
+  - Single-file deployment, no separate image database needed
+- Compressed WebP format saves ~70% storage vs. original
+- Original images always available in source PDFs
+
+See [`docs/image_rag_example.md`](docs/image_rag_example.md) for detailed examples and performance analysis.
+
+---
+
 ## 🏗️ Architecture Overview
 
 ### High-Level Pipeline
