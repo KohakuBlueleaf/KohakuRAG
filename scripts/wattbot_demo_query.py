@@ -84,6 +84,17 @@ async def main() -> None:
     parser.add_argument("--table-prefix", default="wattbot")
     parser.add_argument("--question", required=True)
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--with-images",
+        action="store_true",
+        help="Enable image-aware retrieval (extract images from sections)",
+    )
+    parser.add_argument(
+        "--top-k-images",
+        type=int,
+        default=0,
+        help="Number of images from image-only index (requires wattbot_build_image_index.py)",
+    )
     args = parser.parse_args()
 
     # Load datastore and create pipeline
@@ -95,7 +106,12 @@ async def main() -> None:
     pipeline = RAGPipeline(store=store)
 
     # Execute retrieval
-    result = await pipeline.retrieve(args.question, top_k=args.top_k)
+    if args.with_images:
+        result = await pipeline.retrieve_with_images(
+            args.question, top_k=args.top_k, top_k_images=args.top_k_images
+        )
+    else:
+        result = await pipeline.retrieve(args.question, top_k=args.top_k)
 
     print(f"Question: {args.question}")
 
@@ -149,6 +165,16 @@ async def main() -> None:
         )
     else:
         print("No snippets available.")
+
+    # Show image results if image-aware retrieval was used
+    if args.with_images and result.image_nodes:
+        print(f"\nReferenced media ({len(result.image_nodes)} images):")
+        for idx, img_node in enumerate(result.image_nodes, 1):
+            doc_id = img_node.metadata.get("document_id", "unknown")
+            page = img_node.metadata.get("page", "?")
+            img_idx = img_node.metadata.get("image_index", "?")
+            print(f"\n  [{idx}] {doc_id} page {page}, image {img_idx}")
+            print(f"      {img_node.text[:150]}...")
 
 
 if __name__ == "__main__":

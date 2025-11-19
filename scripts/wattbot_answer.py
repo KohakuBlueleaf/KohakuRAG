@@ -306,6 +306,8 @@ class AppConfig:
     metadata: Mapping[str, Mapping[str, str]]
     max_retries: int
     max_concurrent: int
+    with_images: bool = False
+    top_k_images: int = 0
 
 
 @dataclass(frozen=True)
@@ -408,6 +410,8 @@ async def _answer_single_row(
                 user_template=USER_PROMPT_TEMPLATE,
                 additional_info=additional_info,
                 top_k=current_top_k,
+                with_images=config.with_images,
+                top_k_images=config.top_k_images,
             )
             structured = qa_result.answer
             is_blank = (
@@ -571,6 +575,17 @@ def parse_args() -> argparse.Namespace:
         "--question-id",
         help="Question id to debug in single-run mode (defaults to the first row).",
     )
+    parser.add_argument(
+        "--with-images",
+        action="store_true",
+        help="Enable image-aware retrieval (requires documents with captioned images).",
+    )
+    parser.add_argument(
+        "--top-k-images",
+        type=int,
+        default=0,
+        help="Number of images to retrieve from image-only index (0 = only from sections). Requires wattbot_build_image_index.py to be run first.",
+    )
     return parser.parse_args()
 
 
@@ -608,6 +623,8 @@ async def run_single_question_debug(
             user_template=USER_PROMPT_TEMPLATE,
             additional_info=additional_info,
             top_k=current_top_k,
+            with_images=config.with_images,
+            top_k_images=config.top_k_images,
         )
         structured = qa_result.answer
         is_blank = (
@@ -722,6 +739,8 @@ async def main() -> None:
         metadata=metadata,
         max_retries=max(0, args.max_retries),
         max_concurrent=args.max_concurrent,  # Allow 0 or negative to disable rate limiting
+        with_images=args.with_images,
+        top_k_images=args.top_k_images,
     )
 
     # Create shared pipeline

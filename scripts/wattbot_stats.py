@@ -6,7 +6,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from kohakurag import NodeKind
-from kohakurag.datastore import KVaultNodeStore
+from kohakurag.datastore import ImageStore, KVaultNodeStore
 
 
 async def main() -> None:
@@ -20,6 +20,7 @@ async def main() -> None:
     paragraph_per_doc = defaultdict(int)
     sentence_per_doc = defaultdict(int)
     attachment_count = 0
+    image_paragraph_count = 0  # Paragraphs with image captions
 
     info = store._vectors.info()  # type: ignore[attr-defined]
     total_entries = info.get("count", 0)
@@ -36,6 +37,9 @@ async def main() -> None:
         doc_id = node.metadata.get("document_id", node.node_id.split(":")[0])
         if node.kind == NodeKind.PARAGRAPH:
             paragraph_per_doc[doc_id] += 1
+            # Check if this paragraph is an image caption
+            if node.metadata.get("attachment_type") == "image":
+                image_paragraph_count += 1
         if node.kind == NodeKind.SENTENCE:
             sentence_per_doc[doc_id] += 1
         if node.kind == NodeKind.ATTACHMENT:
@@ -55,6 +59,18 @@ async def main() -> None:
         print(f"\nAverage paragraphs per document: {avg_paragraphs:.2f}")
         print(f"Average sentences per document: {avg_sentences:.2f}")
     print(f"Attachment nodes: {attachment_count}")
+
+    # Check for image data
+    print(f"\nImage Statistics:")
+    print(f"  Image caption nodes: {image_paragraph_count}")
+
+    # Try to access image store to count compressed images
+    try:
+        image_store = ImageStore(args.db, table="image_blobs")
+        image_keys = await image_store.list_images(prefix="img:")
+        print(f"  Compressed image blobs: {len(image_keys)}")
+    except Exception:
+        print(f"  Compressed image blobs: 0 (no image_blobs table)")
 
 
 if __name__ == "__main__":

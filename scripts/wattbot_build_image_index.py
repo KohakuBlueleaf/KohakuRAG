@@ -1,0 +1,165 @@
+"""Build a separate image-only vector index for dedicated image retrieval.
+
+This script is OPTIONAL and works on top of an existing image-enhanced database.
+It creates a separate vector table containing ONLY image caption embeddings,
+enabling fast top-k image retrieval alongside text retrieval.
+
+Workflow:
+1. Text-only:              wattbot_text_only.db (no images)
+2. Text + images in tree:  wattbot_with_images.db (images as part of main hierarchy)
+3. + Image-only retrieval: Run THIS script on wattbot_with_images.db
+
+Usage:
+    # First, build the image-enhanced index normally
+    python scripts/wattbot_build_index.py \\
+        --docs-dir artifacts/docs_with_images \\
+        --db artifacts/wattbot_with_images.db \\
+        --table-prefix wattbot_img
+
+    # Then, optionally add image-only retrieval table
+    python scripts/wattbot_build_image_index.py \\
+        --db artifacts/wattbot_with_images.db \\
+        --table-prefix wattbot_img
+"""
+
+import argparse
+import asyncio
+from pathlib import Path
+
+import numpy as np
+from kohakuvault import VectorKVault
+
+from kohakurag import NodeKind
+from kohakurag.datastore import KVaultNodeStore
+
+
+async def main() -> None:
+    """Build image-only vector index from existing node store."""
+    parser = argparse.ArgumentParser(
+        description="Build image-only vector index for dedicated image retrieval"
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("artifacts/wattbot_with_images.db"),
+        help="Existing database with image-enhanced index",
+    )
+    parser.add_argument(
+        "--table-prefix",
+        default="wattbot_img",
+        help="Table prefix used in main index",
+    )
+    parser.add_argument(
+        "--image-table",
+        default=None,
+        help="Table name for image-only vectors (default: {prefix}_images_vec)",
+    )
+    args = parser.parse_args()
+
+    # Derive image table name
+    image_table = args.image_table or f"{args.table_prefix}_images_vec"
+
+    print("=" * 60)
+    print("Building Image-Only Vector Index")
+    print("=" * 60)
+    print(f"Database:     {args.db}")
+    print(f"Main prefix:  {args.table_prefix}")
+    print(f"Image table:  {image_table}")
+    print("=" * 60)
+
+    if not args.db.exists():
+        print(f"\nERROR: Database not found: {args.db}")
+        print("Run wattbot_build_index.py first to create the main index.")
+        sys.exit(1)
+
+    # Load existing node store
+    print("\nLoading existing node store...")
+    try:
+        store = KVaultNodeStore(
+            args.db,
+            table_prefix=args.table_prefix,
+            dimensions=None,  # Auto-detect
+        )
+    except Exception as e:
+        print(f"ERROR: Failed to load store: {e}")
+        sys.exit(1)
+
+    print(f"✓ Loaded (dimensions: {store.dimensions})")
+
+    # Scan for image nodes
+    print("\nScanning for image caption nodes...")
+
+    info = store._vectors.info()
+    total_entries = info.get("count", 0)
+
+    image_nodes = []
+
+    for row_id in range(1, total_entries + 1):
+        try:
+            _, node_id = store._vectors.get_by_id(row_id)
+            if isinstance(node_id, bytes):
+                node_id = node_id.decode()
+
+            node = await store.get_node(node_id)
+
+            # Check if this is an image caption node
+            if node.metadata.get("attachment_type") == "image":
+                image_nodes.append(node)
+
+        except Exception:
+            continue
+
+    print(f"✓ Found {len(image_nodes)} image caption nodes")
+
+    if not image_nodes:
+        print("\n⚠️  No image nodes found in database!")
+        print("Make sure you:")
+        print("  1. Ran wattbot_add_image_captions.py to add captions")
+        print("  2. Ran wattbot_build_index.py on docs_with_images/")
+        sys.exit(0)
+
+    # Create image-only vector table
+    print(f"\nCreating image-only vector table: {image_table}")
+
+    try:
+        image_vec_store = VectorKVault(
+            str(args.db),
+            table=image_table,
+            dimensions=store.dimensions,
+            metric="cosine",
+        )
+        image_vec_store.enable_auto_pack()
+    except Exception as e:
+        print(f"ERROR: Failed to create image vector table: {e}")
+        sys.exit(1)
+
+    # Insert image embeddings
+    print(f"Inserting {len(image_nodes)} image embeddings...")
+
+    inserted = 0
+    for node in image_nodes:
+        try:
+            image_vec_store.insert(
+                node.embedding.astype(np.float32),
+                node.node_id,  # Store node_id as value for lookup
+            )
+            inserted += 1
+        except Exception as e:
+            print(f"  ⚠️  Failed to insert {node.node_id}: {e}")
+
+    print(f"✓ Inserted {inserted}/{len(image_nodes)} image embeddings")
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("Image-Only Index Complete")
+    print("=" * 60)
+    print(f"Image embeddings: {inserted}")
+    print(f"Table: {image_table}")
+    print("\nNow you can use --top-k-images flag with wattbot_answer.py")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    import sys
+
+    asyncio.run(main())
