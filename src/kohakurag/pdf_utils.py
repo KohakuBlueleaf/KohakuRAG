@@ -20,6 +20,34 @@ def _resolve(obj):
 
 
 def _extract_images(page) -> list[dict[str, Any]]:
+    """Extract images from a PDF page using pypdf's images API.
+
+    Returns list of dicts with image metadata and optionally the image data.
+    """
+    images: list[dict[str, Any]] = []
+    try:
+        # Modern pypdf API (>= 3.1.0) - much more reliable
+        for img in page.images:
+            image_info = {
+                "name": img.name,
+                "data": img.data,  # Raw image bytes
+            }
+            # Try to get dimensions from the image object
+            if hasattr(img, "image") and img.image:
+                try:
+                    image_info["width"] = img.image.width
+                    image_info["height"] = img.image.height
+                except Exception:
+                    pass
+            images.append(image_info)
+    except Exception as e:
+        # Fallback to old method if page.images fails
+        images = _extract_images_fallback(page)
+    return images
+
+
+def _extract_images_fallback(page) -> list[dict[str, Any]]:
+    """Fallback method using low-level PDF dictionary access."""
     images: list[dict[str, Any]] = []
     resources = page.get("/Resources")
     if not resources:
@@ -38,13 +66,15 @@ def _extract_images(page) -> list[dict[str, Any]]:
         if not isinstance(resolved, DictionaryObject):
             continue
         subtype = resolved.get("/Subtype")
-        if subtype == "/Image":
+        # Convert to string for comparison - pypdf returns NameObject, not str
+        if str(subtype) == "/Image":
             images.append(
                 {
                     "name": str(name),
                     "width": resolved.get("/Width"),
                     "height": resolved.get("/Height"),
                     "color_space": resolved.get("/ColorSpace"),
+                    "data": None,  # Not extracted in fallback
                 }
             )
     return images
@@ -78,20 +108,40 @@ def pdf_to_document_payload(
             all_paragraph_texts.append(paragraph_text)
         images = _extract_images(page)
         for idx, info in enumerate(images, start=1):
+            # Create informative caption with available metadata
+            width = info.get("width", "unknown")
+            height = info.get("height", "unknown")
+            has_data = info.get("data") is not None
+            data_size = len(info.get("data", b"")) if has_data else 0
+
             caption = (
-                f"[Image page={page_num} idx={idx}] Placeholder for "
-                f"{info.get('width')}x{info.get('height')} {info.get('color_space')} graphic."
+                f"[Image page={page_num} idx={idx} name={info.get('name', 'unknown')}] "
+                f"Size: {width}x{height}, Data: {data_size} bytes"
             )
             sentences = [SentencePayload(text=caption)]
+
+            # Store image data in metadata for later processing
+            image_metadata = {
+                "page": page_num,
+                "image_index": idx,
+                "image_name": info.get("name"),
+                "image_width": info.get("width"),
+                "image_height": info.get("height"),
+                "attachment_type": "image",
+                "has_image_data": has_data,
+                "image_data_size": data_size,
+            }
+
+            # Optionally include the actual image data (can be large!)
+            # Uncomment if you want to store the raw bytes
+            # if has_data:
+            #     image_metadata["image_data"] = info.get('data')
+
             paragraphs.append(
                 ParagraphPayload(
                     text=caption,
                     sentences=sentences,
-                    metadata={
-                        "page": page_num,
-                        "image_index": idx,
-                        "placeholder": True,
-                    },
+                    metadata=image_metadata,
                 )
             )
             all_paragraph_texts.append(caption)
