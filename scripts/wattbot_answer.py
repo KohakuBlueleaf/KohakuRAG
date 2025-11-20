@@ -679,7 +679,6 @@ async def main() -> None:
     """Main entry point: load data, create pipeline, process questions."""
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Writing output to: {output_path}")
 
     # Load input data
     rows, columns = load_questions(Path(questions))
@@ -737,7 +736,6 @@ async def main() -> None:
 
 
 def entry_point():
-    print(output)
     asyncio.run(main())
 
 
