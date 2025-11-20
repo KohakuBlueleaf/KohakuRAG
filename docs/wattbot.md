@@ -40,10 +40,31 @@ python scripts/wattbot_answer.py \
     --top-k 6
 
 python scripts/wattbot_validate.py \
-    --pred artifacts/wattbot_train_preds.csv
+    --pred artifacts/wattbot_train_preds.csv \
+    --verbose
 ```
 
-The validation script compares your predictions to the ground truth using the official WattBot score recipe (0.75 × answer_value, 0.15 × ref_id, 0.10 × NA handling). Use `--show-errors 5` to print the lowest-scoring rows and inspect which answers, citations, or NA flags need attention.
+The validation script compares your predictions to the ground truth using the official WattBot score recipe (0.75 × answer_value, 0.15 × ref_id, 0.10 × NA handling). Use `--show-errors 5` to print the lowest-scoring rows and inspect which answers, citations, or NA flags need attention. Add `--verbose` for detailed per-question output.
+
+## Aggregating multiple results
+
+When you have multiple result CSVs (e.g., from different models or runs), use the aggregation script to combine them using majority voting:
+
+```bash
+python scripts/wattbot_aggregate.py \
+    artifacts/results/*.csv \
+    -o artifacts/aggregated_preds.csv \
+    --ref-mode union \
+    --tiebreak first
+```
+
+**Options:**
+- `--ref-mode union` (default): Combine ref_ids from all matching answers
+- `--ref-mode intersection`: Only keep ref_ids that appear in all matching answers
+- `--tiebreak first` (default): When all answers differ, use the first CSV's answer
+- `--tiebreak blank`: When all answers differ, output `is_blank`
+
+The script selects the most frequent `answer_value` for each question across all input CSVs, then aggregates reference IDs from the rows that had the winning answer.
 
 ## Configuring LLM and embeddings
 

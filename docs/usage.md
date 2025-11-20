@@ -450,7 +450,7 @@ Because the public `data/test_Q.csv` file has no answers, use `data/train_QA.csv
 python scripts/wattbot_answer.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text --questions data/train_QA.csv --output artifacts/text_only_train_preds.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2
 
 # Validate
-python scripts/wattbot_validate.py --pred artifacts/text_only_train_preds.csv --show-errors 5
+python scripts/wattbot_validate.py --pred artifacts/text_only_train_preds.csv --show-errors 5 --verbose
 
 # Example output:
 # WattBot score: 0.7812
@@ -463,7 +463,7 @@ python scripts/wattbot_validate.py --pred artifacts/text_only_train_preds.csv --
 python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --questions data/train_QA.csv --output artifacts/with_images_train_preds.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2 --with-images  # ← Important!
 
 # Validate
-python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv --show-errors 5
+python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv --show-errors 5 --verbose
 
 # Example output:
 # WattBot score: 0.8245 (+5.4% improvement!)
@@ -474,10 +474,10 @@ python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv 
 ```bash
 # Show side-by-side comparison
 echo "Text-only:"
-python scripts/wattbot_validate.py --pred artifacts/text_only_train_preds.csv
+python scripts/wattbot_validate.py --pred artifacts/text_only_train_preds.csv --verbose
 
 echo -e "\nWith images:"
-python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv
+python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv --verbose
 ```
 
 The validation command compares predictions to ground truth using the official WattBot scoring recipe (answer accuracy, citation overlap, and NA handling). Iterate here until the validation score looks good, then switch the `--questions` flag back to `data/test_Q.csv` to produce the submission file.
@@ -513,3 +513,153 @@ This mode:
 - Debug why a specific question fails
 - Inspect exactly what context (text + images) the LLM sees
 - Verify image captions are being retrieved correctly
+
+## 9. Aggregate multiple result files
+
+When you have multiple result CSVs from different runs (e.g., different models, parameters, or random seeds), aggregate them using majority voting:
+
+```bash
+python scripts/wattbot_aggregate.py \
+    artifacts/results/*.csv \
+    -o artifacts/aggregated_preds.csv \
+    --ref-mode union \
+    --tiebreak first
+```
+
+**What it does**:
+- Loads all input CSVs and groups rows by question ID
+- For each question, selects the most frequent `answer_value` across all files
+- Aggregates `ref_id` from rows with the winning answer
+
+### Options
+
+| Flag | Values | Description |
+|------|--------|-------------|
+| `--ref-mode` | `union` (default), `intersection` | How to combine ref_ids from matching answers |
+| `--tiebreak` | `first` (default), `blank` | What to do when all answers differ |
+
+### Tiebreak modes
+
+**`--tiebreak first`** (default):
+- When all CSVs give different answers, use the first CSV's answer
+- Useful when you trust earlier runs more
+
+**`--tiebreak blank`**:
+- When all CSVs give different answers, set all fields to `is_blank`
+- Conservative approach when uncertain
+
+### Example workflow
+
+```bash
+# Run multiple models
+python scripts/wattbot_answer.py --model gpt-4o-mini --output artifacts/results/gpt4o_mini.csv ...
+python scripts/wattbot_answer.py --model gpt-4o --output artifacts/results/gpt4o.csv ...
+python scripts/wattbot_answer.py --model claude-3-5-sonnet --output artifacts/results/claude.csv ...
+
+# Aggregate results
+python scripts/wattbot_aggregate.py \
+    artifacts/results/*.csv \
+    -o artifacts/ensemble_preds.csv \
+    --ref-mode union
+
+# Validate aggregated results
+python scripts/wattbot_validate.py --pred artifacts/ensemble_preds.csv --verbose
+```
+
+## 10. Using KohakuEngine Configs
+
+All scripts support KohakuEngine configuration files for reproducible, version-controlled experiments.
+
+### Quick Start
+
+```bash
+# Run with a config file
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
+
+# Run a workflow
+python configs/workflows/text_pipeline.py
+```
+
+### Config File Structure
+
+Config files are pure Python. Define variables at module level, then use `Config.from_globals()`:
+
+```python
+# configs/my_config.py
+from kohakuengine import Config
+
+# All settings as module-level variables
+db = "artifacts/wattbot.db"
+model = "gpt-4o-mini"
+top_k = 6
+output = "artifacts/my_results.csv"
+
+def config_gen():
+    return Config.from_globals()
+```
+
+### Available Config Examples
+
+```
+configs/
+├── text_only/
+│   └── answer.py           # Text-only answer config
+├── with_images/
+│   └── answer.py           # Image-enhanced answer config
+├── sweeps/
+│   └── model_sweep.py      # Compare multiple models
+└── workflows/
+    ├── text_pipeline.py    # Full fetch→index→answer→validate
+    └── ensemble_runner.py  # Parallel models + aggregation
+```
+
+### Running Sweeps
+
+Generate multiple configs from one file for hyperparameter sweeps:
+
+```bash
+# Run model comparison in parallel
+kogine workflow parallel scripts/wattbot_answer.py \
+    --config configs/sweeps/model_sweep.py \
+    --workers 3
+```
+
+### Workflow Orchestration
+
+Chain multiple scripts with the Flow API:
+
+```python
+# configs/workflows/my_workflow.py
+from kohakuengine import Config, Script, Flow
+
+fetch_config = Config(globals_dict={"metadata": "data/metadata.csv", ...})
+answer_config = Config(globals_dict={"db": "artifacts/wattbot.db", ...})
+
+if __name__ == "__main__":
+    scripts = [
+        Script("scripts/wattbot_fetch_docs.py", config=fetch_config),
+        Script("scripts/wattbot_answer.py", config=answer_config),
+    ]
+
+    flow = Flow(scripts, mode="sequential")
+    flow.run()
+```
+
+### Ensemble/Voting Workflow
+
+Run multiple models and aggregate with majority voting:
+
+```bash
+# This runs:
+# 1. Multiple models in parallel
+# 2. Aggregates results with wattbot_aggregate.py
+# 3. Validates aggregated predictions
+python configs/workflows/ensemble_runner.py
+```
+
+### Benefits
+
+- **Reproducible**: Config files are version-controlled Python
+- **Composable**: Chain scripts into workflows
+- **Parallel**: Run sweeps and ensembles concurrently
+- **No code changes**: Scripts work with both CLI args and configs
