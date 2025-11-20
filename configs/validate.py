@@ -4,7 +4,8 @@ from kohakuengine import Config
 
 truth = "data/train_QA.csv"
 pred = "artifacts/wattbot_answers.csv"  # Required
-show_errors = 5
+pred = "outputs/train-result-gpt-oss/ensemble_preds.csv"
+show_errors = 0
 verbose = True
 
 
