@@ -26,7 +26,7 @@ The goal is to keep the RAG pipeline agnostic to the actual provider: you config
 
 If `OPENAI_API_KEY` is missing everywhere, `OpenAIChatModel` raises a `ValueError`. `OPENAI_BASE_URL` is optional; if it is not set, the client defaults to OpenAI's hosted API.
 
-This means you can switch between OpenAI, self-hosted vLLM/llama.cpp, or a multi-provider proxy **without changing application code**—only environment variables and the `model` string.
+This means you can switch between OpenAI, self-hosted vLLM/llama.cpp, or a multi-provider proxy **without changing application code**—only environment variables and the config settings.
 
 ---
 
@@ -36,23 +36,35 @@ For standard OpenAI usage, no base URL override is required.
 
 ```bash
 export OPENAI_API_KEY=sk-...
+```
 
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot \
-    --questions data/test_Q.csv \
-    --output artifacts/wattbot_answers.csv \
-    --model gpt-4o-mini \
-    --top-k 6 \
-    --max-concurrent 10 \
-    --max-retries 3
+**Config** (`configs/text_only/answer.py`):
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+questions = "data/test_Q.csv"
+output = "artifacts/wattbot_answers.csv"
+model = "gpt-4o-mini"
+top_k = 6
+max_concurrent = 10
+max_retries = 3
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
+```bash
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
 ```
 
 **Notes on TPM limits (e.g., `gpt-4o-mini`):**
 
-- Lower TPM → use smaller `--max-concurrent` (e.g., `5`), smaller `--top-k`, and possibly larger `max_retries` in `OpenAIChatModel`.
-- Higher TPM → you can safely increase `--max-concurrent` and `--top-k` for throughput.
-- Self-hosted → set `--max-concurrent 0` for unlimited concurrency.
+- Lower TPM → use smaller `max_concurrent` (e.g., `5`), smaller `top_k`, and possibly larger `max_retries` in config.
+- Higher TPM → you can safely increase `max_concurrent` and `top_k` for throughput.
+- Self-hosted → set `max_concurrent = 0` for unlimited concurrency.
 
 ---
 
@@ -72,15 +84,27 @@ Then point KohakuRAG at this server:
 ```bash
 export OPENAI_BASE_URL="http://localhost:8000/v1"
 export OPENAI_API_KEY="dummy"  # vLLM often ignores the key but the client requires one
+```
 
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot \
-    --questions data/test_Q.csv \
-    --output artifacts/wattbot_answers.csv \
-    --model <your-vllm-model-name> \
-    --top-k 6 \
-    --max-concurrent 0  # No rate limiting for local endpoint
+**Config:**
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+questions = "data/test_Q.csv"
+output = "artifacts/wattbot_answers.csv"
+model = "<your-vllm-model-name>"
+top_k = 6
+max_concurrent = 0  # No rate limiting for local endpoint
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
+```bash
+kogine run scripts/wattbot_answer.py --config configs/vllm_answer.py
 ```
 
 As long as vLLM implements the OpenAI Chat Completions protocol, `OpenAIChatModel` will work unchanged. All scripts use async for efficient concurrent processing.
@@ -104,15 +128,27 @@ Configure KohakuRAG:
 ```bash
 export OPENAI_BASE_URL="http://localhost:8000/v1"
 export OPENAI_API_KEY="dummy"
+```
 
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot \
-    --questions data/test_Q.csv \
-    --output artifacts/wattbot_answers.csv \
-    --model <llama-model-name> \
-    --top-k 6 \
-    --max-concurrent 0  # No rate limiting for local endpoint
+**Config:**
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+questions = "data/test_Q.csv"
+output = "artifacts/wattbot_answers.csv"
+model = "<llama-model-name>"
+top_k = 6
+max_concurrent = 0  # No rate limiting for local endpoint
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
+```bash
+kogine run scripts/wattbot_answer.py --config configs/llama_answer.py
 ```
 
 Again, no code changes are required—only the endpoint and model name differ. The async architecture efficiently handles concurrent requests.
@@ -131,13 +167,27 @@ From KohakuRAG's perspective, such a proxy looks like "just another OpenAI-compa
 ```bash
 export OPENAI_API_KEY="your-proxy-api-key"
 export OPENAI_BASE_URL="https://your-proxy.example.com/v1"
+```
 
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot \
-    --questions data/test_Q.csv \
-    --output artifacts/wattbot_answers.csv \
-    --model claude-3-opus
+**Config:**
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+questions = "data/test_Q.csv"
+output = "artifacts/wattbot_answers.csv"
+model = "claude-3-opus"  # or gemini-1.5-pro, etc.
+top_k = 6
+max_concurrent = 10
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
+```bash
+kogine run scripts/wattbot_answer.py --config configs/proxy_answer.py
 ```
 
 The proxy is responsible for holding provider-specific secrets (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, etc.), enforcing per-provider rate limits, and translating between the OpenAI schema and the provider's native API.
@@ -184,7 +234,7 @@ async def main():
 asyncio.run(main())
 ```
 
-You can wire these into `RAGPipeline` as separate components, or continue to use the existing WattBot scripts and switch providers globally via `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and the `--model` flag. All operations are async for efficient concurrent processing.
+You can wire these into `RAGPipeline` as separate components, or continue to use the existing WattBot scripts and switch providers globally via `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and the config settings. All operations are async for efficient concurrent processing.
 
 For more details on how the pipeline uses `ChatModel`, see `docs/architecture.md` and `docs/api_reference.md`.
 

@@ -2,111 +2,190 @@
 
 This guide ties the general KohakuRAG architecture to the specifics of the WattBot 2025 Kaggle competition.
 
+## Prerequisites
+
+Install [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine) for configuration management:
+
+```bash
+pip install kohakuengine
+```
+
 ## Repository layout
 - `data/metadata.csv` — bibliography of the reference documents.
 - `data/train_QA.csv` — labeled examples showing the expected CSV output format.
 - `data/test_Q.csv` — unlabeled questions to be answered for submission.
 - `src/kohakurag/` — reusable library (datastore, indexing, RAG pipeline).
 - `scripts/` — WattBot-focused utilities (document parsing, indexing, inference, submission helpers).
+- `configs/` — KohakuEngine configuration files for all scripts.
+- `workflows/` — runnable workflow scripts that orchestrate full pipelines.
 - `docs/` — design and operations documentation.
 
-## Indexing flow
-1. Run `scripts/wattbot_fetch_docs.py` to download PDFs (where permissible) and convert them into structured JSON payloads under `artifacts/docs/`. Each payload stores per-page sections, paragraphs, sentences, and placeholder captions for figures.
-2. Run `scripts/wattbot_build_index.py` to read those JSON files (or fall back to citation text when `--use-citations` is set). The script:
-   - Loads the metadata table to enrich payloads with titles/URLs.
-   - Uses the `DocumentIndexer` to build document → section → paragraph → sentence nodes with embeddings.
-   - Stores the nodes in `artifacts/wattbot.db` via `KVaultNodeStore`.
-3. Run `scripts/wattbot_demo_query.py` to sanity check that questions retrieve relevant snippets.
-
-## Answering questions
-1. Point `scripts/wattbot_answer.py` at the built index and a CSV of questions (`data/train_QA.csv` or `data/test_Q.csv`).
-2. The script loads the datastore, spins up the `RAGPipeline`, and processes each row:
-   - Plans queries/keywords for the question.
-   - Retrieves top-k snippets with hierarchical expansion.
-   - Calls the configured LLM (OpenAI by default) with a structured prompt and the retrieved context.
-   - Parses the JSON response, fills in missing fields (e.g., `answer_value`), and writes out a Kaggle-ready CSV.
-3. Review the generated explanations/supporting materials to ensure the answers are grounded.
-
-## Validating against the training set
-Use the labeled `data/train_QA.csv` file to sanity-check your pipeline before submitting to Kaggle:
+## Quick Start: Run Full Pipeline
 
 ```bash
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot \
-    --questions data/train_QA.csv \
-    --output artifacts/wattbot_train_preds.csv \
-    --model gpt-5.1 \
-    --top-k 6
+# Text-only pipeline (fetch → index → answer → validate)
+python workflows/text_pipeline.py
 
-python scripts/wattbot_validate.py \
-    --pred artifacts/wattbot_train_preds.csv \
-    --verbose
+# Image-enhanced pipeline (fetch → caption → index → answer → validate)
+python workflows/with_image_pipeline.py
+
+# Ensemble with voting (multiple parallel runs → aggregate)
+python workflows/ensemble_runner.py
 ```
 
-The validation script compares your predictions to the ground truth using the official WattBot score recipe (0.75 × answer_value, 0.15 × ref_id, 0.10 × NA handling). Use `--show-errors 5` to print the lowest-scoring rows and inspect which answers, citations, or NA flags need attention. Add `--verbose` for detailed per-question output.
+## Running Individual Scripts
+
+All scripts are configured via Python config files. Edit the config, then run with kogine:
+
+```bash
+kogine run scripts/wattbot_fetch_docs.py --config configs/fetch.py
+kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
+kogine run scripts/wattbot_validate.py --config configs/validate.py
+```
+
+## Indexing flow
+
+1. **Fetch documents**: Edit `configs/fetch.py` and run:
+   ```bash
+   kogine run scripts/wattbot_fetch_docs.py --config configs/fetch.py
+   ```
+   Downloads PDFs and converts them into structured JSON payloads under `artifacts/docs/`.
+
+2. **Build index**: Edit `configs/text_only/index.py` (or `configs/with_images/index.py`) and run:
+   ```bash
+   kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
+   ```
+   Builds document → section → paragraph → sentence nodes with embeddings.
+
+3. **Sanity check**: Edit `configs/demo_query.py` with your question and run:
+   ```bash
+   kogine run scripts/wattbot_demo_query.py --config configs/demo_query.py
+   ```
+
+## Answering questions
+
+Edit `configs/text_only/answer.py` (or `configs/with_images/answer.py`):
+
+```python
+# configs/text_only/answer.py
+from kohakuengine import Config
+
+db = "artifacts/wattbot_text_only.db"
+table_prefix = "wattbot_text"
+questions = "data/test_Q.csv"
+output = "artifacts/wattbot_answers.csv"
+model = "gpt-4o-mini"
+top_k = 6
+max_retries = 2
+max_concurrent = 10
+# ... other settings
+
+def config_gen():
+    return Config.from_globals()
+```
+
+Then run:
+```bash
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
+```
+
+## Validating against the training set
+
+Edit `configs/validate.py`:
+
+```python
+from kohakuengine import Config
+
+truth = "data/train_QA.csv"
+pred = "artifacts/wattbot_answers.csv"
+show_errors = 5
+verbose = True
+
+def config_gen():
+    return Config.from_globals()
+```
+
+Then run:
+```bash
+kogine run scripts/wattbot_validate.py --config configs/validate.py
+```
+
+The validation script compares predictions to ground truth using the official WattBot score recipe (0.75 × answer_value, 0.15 × ref_id, 0.10 × NA handling).
 
 ## Aggregating multiple results
 
-When you have multiple result CSVs (e.g., from different models or runs), use the aggregation script to combine them using majority voting:
+Edit `configs/aggregate.py`:
 
-```bash
-python scripts/wattbot_aggregate.py \
-    artifacts/results/*.csv \
-    -o artifacts/aggregated_preds.csv \
-    --ref-mode union \
-    --tiebreak first
+```python
+from kohakuengine import Config
+
+inputs = [
+    "artifacts/results/run1.csv",
+    "artifacts/results/run2.csv",
+    "artifacts/results/run3.csv",
+]
+output = "artifacts/aggregated_preds.csv"
+ref_mode = "union"  # or "intersection"
+tiebreak = "first"  # or "blank"
+
+def config_gen():
+    return Config.from_globals()
 ```
 
-**Options:**
-- `--ref-mode union` (default): Combine ref_ids from all matching answers
-- `--ref-mode intersection`: Only keep ref_ids that appear in all matching answers
-- `--tiebreak first` (default): When all answers differ, use the first CSV's answer
-- `--tiebreak blank`: When all answers differ, output `is_blank`
-
-The script selects the most frequent `answer_value` for each question across all input CSVs, then aggregates reference IDs from the rows that had the winning answer.
+Then run:
+```bash
+kogine run scripts/wattbot_aggregate.py --config configs/aggregate.py
+```
 
 ## Configuring LLM and embeddings
 
 ### OpenAI Configuration
-- Set `OPENAI_API_KEY` for production runs. The scripts automatically choose the OpenAI chat backend when the key is available; otherwise they fall back to a lightweight mock useful for unit tests.
-- **Async/await architecture** — all I/O operations (API calls, embeddings, database) use async for efficient concurrent processing
-- **Rate limit handling is automatic** — the `OpenAIChatModel` class includes:
-  - Semaphore-based concurrency control via `max_concurrent` parameter
-  - Intelligent retry logic that parses server-recommended wait times
-  - Falls back to exponential backoff if no specific delay is provided
-  - Prints clear retry messages for monitoring
-  - Continues processing without manual intervention
+- Set `OPENAI_API_KEY` for production runs.
+- Configure `max_concurrent` in your answer config to control rate limiting.
+- Configure `max_retries` for automatic retry on rate limits.
 
-**Recommended configuration for WattBot 2025:**
-```bash
-# For 500K TPM accounts (common for gpt-4o-mini)
-python scripts/wattbot_answer.py \
-    --max-concurrent 5 \      # Limit concurrent API requests
-    --model gpt-4o-mini \
-    --top-k 6
+**Example config for different TPM limits:**
 
-# For higher TPM accounts or self-hosted endpoints
-python scripts/wattbot_answer.py \
-    --max-concurrent 20 \     # More concurrent requests
-    --model gpt-4o-mini \
-    --top-k 8
+```python
+# configs/text_only/answer.py
 
-# For unlimited concurrency (use with caution)
-python scripts/wattbot_answer.py \
-    --max-concurrent 0 \      # No rate limiting
-    --model gpt-4o-mini \
-    --top-k 6
+# For 500K TPM accounts
+max_concurrent = 5
+top_k = 6
+
+# For higher TPM accounts
+max_concurrent = 20
+top_k = 8
+
+# For unlimited concurrency
+max_concurrent = 0  # or -1
 ```
 
 ### Embedding Configuration
-- Every environment uses `jinaai/jina-embeddings-v3` via `JinaEmbeddingModel`. Alternate encoders can implement the `EmbeddingModel` protocol, but we recommend sticking with Jina to keep embedding behavior aligned.
+- Uses `jinaai/jina-embeddings-v3` via `JinaEmbeddingModel`.
 - First run downloads ~2GB model from Hugging Face — set `HF_HOME` if you need a custom cache location.
 
 ## Testing checklist
-- `scripts/wattbot_fetch_docs.py --limit 2`: downloads/converts a couple of PDFs and emits JSON payloads into `artifacts/docs/`.
-- `scripts/wattbot_build_index.py --docs-dir artifacts/docs --db artifacts/dev_index.db`: builds a mini index from those structured files.
-- `scripts/wattbot_demo_query.py --db artifacts/dev_index.db --question "How much water does GPT-3 training consume?"`: prints retrieved snippets and the mock answer.
-- `python -m unittest tests.test_pipeline`: runs the regression tests over the mock LLM stack while still exercising the Jina embedding pipeline (patched via fixtures when needed).
+
+1. Edit `configs/fetch.py` with `limit = 2`, then:
+   ```bash
+   kogine run scripts/wattbot_fetch_docs.py --config configs/fetch.py
+   ```
+
+2. Edit `configs/text_only/index.py`, then:
+   ```bash
+   kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
+   ```
+
+3. Edit `configs/demo_query.py` with your test question, then:
+   ```bash
+   kogine run scripts/wattbot_demo_query.py --config configs/demo_query.py
+   ```
+
+4. Run unit tests:
+   ```bash
+   python -m unittest tests.test_pipeline
+   ```
 
 These steps ensure the RAG pipeline works end-to-end before spending tokens on real OpenAI calls.

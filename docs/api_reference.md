@@ -654,13 +654,15 @@ asyncio.run(main())
    ```
 
 2. **Adjust concurrency when hitting limits:**
-   ```bash
-   python scripts/wattbot_answer.py --max-concurrent 5  # Reduce from default 10
+   ```python
+   # In your config file (e.g., configs/text_only/answer.py)
+   max_concurrent = 5  # Reduce from default 10
    ```
 
 3. **Disable rate limiting for self-hosted endpoints:**
-   ```bash
-   python scripts/wattbot_answer.py --max-concurrent 0  # Unlimited
+   ```python
+   # In your config file
+   max_concurrent = 0  # Unlimited
    ```
 
 4. **Monitor retry messages in logs:**

@@ -24,9 +24,9 @@ Technical documents (research papers, reports, presentations) often contain crit
 - **Tables and infographics** — comparative data, specifications
 
 Standard text-only RAG systems **miss this visual information** entirely, leading to:
-- ❌ Incomplete answers for questions about figures
-- ❌ Inability to cite visual evidence
-- ❌ Lower accuracy on visual-heavy datasets
+- Incomplete answers for questions about figures
+- Inability to cite visual evidence
+- Lower accuracy on visual-heavy datasets
 
 ### The Solution
 
@@ -41,7 +41,15 @@ KohakuRAG's image captioning pipeline:
 
 ## Prerequisites
 
-### 1. OpenRouter Account (Recommended)
+### 1. Install KohakuEngine
+
+All scripts use [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine) for configuration:
+
+```bash
+pip install kohakuengine
+```
+
+### 2. OpenRouter Account (Recommended)
 
 OpenRouter provides access to multiple vision models at competitive prices.
 
@@ -52,7 +60,7 @@ OpenRouter provides access to multiple vision models at competitive prices.
 2. Create new key
 3. Copy the key (starts with `sk-or-v1-...`)
 
-### 2. Environment Setup
+### 3. Environment Setup
 
 ```bash
 # Set environment variables
@@ -64,13 +72,13 @@ echo 'OPENAI_API_KEY=sk-or-v1-your-openrouter-key' >> .env
 echo 'OPENAI_BASE_URL=https://openrouter.ai/api/v1' >> .env
 ```
 
-### 3. Recommended Model
+### 4. Recommended Model
 
 **qwen/qwen3-vl-235b-a22b-instruct**
-- ✅ Cost-effective (~$0.50 per 1000 images)
-- ✅ Good quality for technical diagrams
-- ✅ Fast inference
-- ✅ Handles charts, graphs, and diagrams well
+- Cost-effective (~$0.50 per 1000 images)
+- Good quality for technical diagrams
+- Fast inference
+- Handles charts, graphs, and diagrams well
 
 **Alternatives**:
 - `gpt-4o`: Best quality, higher cost (~$2.50 per 1K images)
@@ -82,14 +90,24 @@ echo 'OPENAI_BASE_URL=https://openrouter.ai/api/v1' >> .env
 
 ### Step 1: Parse PDFs (Standard Workflow)
 
-First, download and parse your PDFs as usual:
+First, download and parse your PDFs as usual.
 
+**Config** (`configs/fetch.py`):
+```python
+from kohakuengine import Config
+
+metadata = "data/metadata.csv"
+pdf_dir = "artifacts/raw_pdfs"
+output_dir = "artifacts/docs"
+limit = 10  # Start with 10 documents for testing
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_fetch_docs.py \
-    --metadata data/metadata.csv \
-    --pdf-dir artifacts/raw_pdfs \
-    --output-dir artifacts/docs \
-    --limit 10  # Start with 10 documents for testing
+kogine run scripts/wattbot_fetch_docs.py --config configs/fetch.py
 ```
 
 **Output**: `artifacts/docs/*.json` with placeholder image entries like:
@@ -107,17 +125,25 @@ python scripts/wattbot_fetch_docs.py \
 
 ### Step 2: Generate Image Captions
 
-Run the vision model captioning script:
+**Config** (`configs/with_images/caption.py`):
+```python
+from kohakuengine import Config
 
+docs_dir = "artifacts/docs"
+pdf_dir = "artifacts/raw_pdfs"
+output_dir = "artifacts/docs_with_images"
+db = "artifacts/wattbot_with_images.db"
+vision_model = "qwen/qwen3-vl-235b-a22b-instruct"
+max_concurrent = 5
+limit = 10
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_add_image_captions.py \
-    --docs-dir artifacts/docs \
-    --pdf-dir artifacts/raw_pdfs \
-    --output-dir artifacts/docs_with_images \
-    --db artifacts/wattbot_with_images.db \
-    --vision-model qwen/qwen3-vl-235b-a22b-instruct \
-    --max-concurrent 5 \
-    --limit 10
+kogine run scripts/wattbot_add_image_captions.py --config configs/with_images/caption.py
 ```
 
 **What happens** (3-phase batch processing):
@@ -197,20 +223,39 @@ Errors:                  0
 
 ### Step 3: Build Parallel Indices
 
-Create **two separate databases** for comparison:
+Create **two separate databases** for comparison.
 
+**Text-only config** (`configs/text_only/index.py`):
+```python
+from kohakuengine import Config
+
+docs_dir = "artifacts/docs"
+db = "artifacts/wattbot_text_only.db"
+table_prefix = "wattbot_text"
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Image-enhanced config** (`configs/with_images/index.py`):
+```python
+from kohakuengine import Config
+
+docs_dir = "artifacts/docs_with_images"
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
 # Text-only index (baseline)
-python scripts/wattbot_build_index.py \
-    --docs-dir artifacts/docs \
-    --db artifacts/wattbot_text_only.db \
-    --table-prefix wattbot_text
+kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
 
 # Image-enhanced index
-python scripts/wattbot_build_index.py \
-    --docs-dir artifacts/docs_with_images \
-    --db artifacts/wattbot_with_images.db \
-    --table-prefix wattbot_img
+kogine run scripts/wattbot_build_index.py --config configs/with_images/index.py
 ```
 
 **Database comparison**:
@@ -219,69 +264,102 @@ ls -lh artifacts/*.db
 
 # wattbot_text_only.db      128 MB
 # wattbot_with_images.db    145 MB  (+13% for image captions)
-# wattbot_images.db         23 MB   (compressed image blobs)
 ```
 
 ### Step 4: Query and Compare
 
-Test retrieval quality with both indices:
+Test retrieval quality with both indices.
 
+**Config** (`configs/demo_query.py`):
+```python
+from kohakuengine import Config
+
+# For text-only
+db = "artifacts/wattbot_text_only.db"
+table_prefix = "wattbot_text"
+question = "What does Figure 3 show about GPU power consumption?"
+top_k = 5
+
+# For image-enhanced, change to:
+# db = "artifacts/wattbot_with_images.db"
+# table_prefix = "wattbot_img"
+# with_images = True
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-# Test question about a figure
-QUESTION="What does Figure 3 show about GPU power consumption?"
-
-# Text-only retrieval
-python scripts/wattbot_demo_query.py \
-    --db artifacts/wattbot_text_only.db \
-    --question "$QUESTION" \
-    --top-k 5
-
-# Image-enhanced retrieval
-python scripts/wattbot_demo_query.py \
-    --db artifacts/wattbot_with_images.db \
-    --question "$QUESTION" \
-    --top-k 5
+kogine run scripts/wattbot_demo_query.py --config configs/demo_query.py
 ```
 
 ### Step 5: Generate Answers with Images
 
-Answer full question sets:
+**Text-only config** (`configs/text_only/answer.py`):
+```python
+from kohakuengine import Config
 
+db = "artifacts/wattbot_text_only.db"
+table_prefix = "wattbot_text"
+questions = "data/test_Q.csv"
+output = "artifacts/text_only_answers.csv"
+model = "gpt-4o-mini"
+top_k = 6
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Image-enhanced config** (`configs/with_images/answer.py`):
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+questions = "data/test_Q.csv"
+output = "artifacts/with_images_answers.csv"
+model = "gpt-4o-mini"
+top_k = 6
+with_images = True  # ← Enables image-aware retrieval
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
 # Text-only answers
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot_text_only.db \
-    --questions data/test_Q.csv \
-    --output artifacts/text_only_answers.csv \
-    --model gpt-4o-mini \
-    --top-k 6
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
 
-# Image-enhanced answers (with --with-images flag)
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot_with_images.db \
-    --questions data/test_Q.csv \
-    --output artifacts/with_images_answers.csv \
-    --model gpt-4o-mini \
-    --top-k 6 \
-    --with-images  # <-- Enables image-aware retrieval
+# Image-enhanced answers
+kogine run scripts/wattbot_answer.py --config configs/with_images/answer.py
 ```
 
 ### Step 6: Validate and Compare Accuracy
 
-```bash
-python scripts/wattbot_validate.py \
-    --truth data/train_QA.csv \
-    --pred artifacts/text_only_answers.csv
+**Config** (`configs/validate.py`):
+```python
+from kohakuengine import Config
 
-# Example output:
+truth = "data/train_QA.csv"
+pred = "artifacts/text_only_answers.csv"  # or with_images_answers.csv
+show_errors = 5
+verbose = True
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
+```bash
+kogine run scripts/wattbot_validate.py --config configs/validate.py
+
+# Example output for text-only:
 # WattBot score: 0.7812
 # Component scores: value=0.8234, ref=0.7456, is_NA=0.9123
 
-python scripts/wattbot_validate.py \
-    --truth data/train_QA.csv \
-    --pred artifacts/with_images_answers.csv
-
-# Example output:
+# Example output for with-images:
 # WattBot score: 0.8245  (+5.4% improvement!)
 # Component scores: value=0.8567, ref=0.7923, is_NA=0.9245
 ```
@@ -311,7 +389,7 @@ Rank | Score | Node ID           | Preview
 2    | 0.756 | nvidia2024:sec5:p7 | [Image page=5 idx=2 name=Fig2] ...
 ```
 
-❌ **Problem**: LLM sees useless placeholder, can't answer "What does Figure 2 show?"
+**Problem**: LLM sees useless placeholder, can't answer "What does Figure 2 show?"
 
 ### After: AI-Generated Caption
 
@@ -329,7 +407,7 @@ Rank | Score | Node ID           | Preview
 }
 ```
 
-**Retrieval result with `--with-images`**:
+**Retrieval result with `with_images = True`**:
 ```
 Context snippets:
 [ref_id=nvidia2024] NVIDIA H100 GPUs deliver 3x performance improvement...
@@ -339,7 +417,7 @@ Referenced media:
 [img:Fig2 1024x683] Line graph comparing power consumption across GPU generations from 2020-2024. Shows NVIDIA V100 at 300W baseline, A100 at 400W (+33%), and H100 at 700W (+75%), with peak training workloads reaching 800W on H100.
 ```
 
-✅ **Solution**: LLM can now answer with specific data points from the figure!
+**Solution**: LLM can now answer with specific data points from the figure!
 
 ---
 
@@ -405,9 +483,9 @@ Questions that don't benefit:
 
 Start small and scale up:
 
-```bash
-# Test with 5 docs first
---limit 5
+```python
+# configs/with_images/caption.py
+limit = 5  # Test with 5 docs first
 
 # Then 10, 20, 50...
 # Monitor caption quality before full run
@@ -474,8 +552,7 @@ Always maintain both indices for A/B testing:
 ```
 artifacts/
 ├── wattbot_text_only.db     # Baseline
-├── wattbot_with_images.db   # Experiment
-├── wattbot_images.db         # Image blobs
+├── wattbot_with_images.db   # Experiment (includes image blobs)
 └── comparison/
     ├── text_only_answers.csv
     ├── with_images_answers.csv
@@ -508,12 +585,9 @@ python -c "from pypdf import PdfReader; print(len(PdfReader('test.pdf').pages[0]
 **Symptoms**: Script hangs or shows many retry messages.
 
 **Solutions**:
-```bash
-# Reduce concurrency
---max-concurrent 2
-
-# Add delays between documents (modify script)
-await asyncio.sleep(1)  # After each document
+```python
+# configs/with_images/caption.py
+max_concurrent = 2  # Reduce concurrency
 ```
 
 ### Issue: Poor Caption Quality
@@ -522,8 +596,8 @@ await asyncio.sleep(1)  # After each document
 
 **Solutions**:
 1. **Try better model**:
-   ```bash
-   --vision-model gpt-4o  # Higher quality
+   ```python
+   vision_model = "gpt-4o"  # Higher quality
    ```
 
 2. **Adjust max_tokens** in `vision.py`:
@@ -592,22 +666,22 @@ asyncio.run(caption_single_image())
 ## Summary
 
 **Key Takeaways**:
-1. ✅ Image captioning improves RAG accuracy by 5-10% on visual-heavy datasets
-2. ✅ OpenRouter + qwen model = cost-effective solution (~$0.13 per 50 docs)
-3. ✅ Separate indices allow easy comparison
-4. ✅ WebP compression keeps storage overhead minimal
-5. ✅ The `--with-images` flag makes integration seamless
+1. Image captioning improves RAG accuracy by 5-10% on visual-heavy datasets
+2. OpenRouter + qwen model = cost-effective solution (~$0.13 per 50 docs)
+3. Separate indices allow easy comparison
+4. WebP compression keeps storage overhead minimal
+5. The `with_images = True` config setting makes integration seamless
 
 **When to Use Image Captioning**:
-- ✅ Technical papers with charts/graphs
-- ✅ Reports with data visualizations
-- ✅ Presentations with diagrams
-- ✅ Any corpus where figures contain unique information
+- Technical papers with charts/graphs
+- Reports with data visualizations
+- Presentations with diagrams
+- Any corpus where figures contain unique information
 
 **When to Skip**:
-- ❌ Text-only documents
-- ❌ Scanned PDFs (requires OCR instead)
-- ❌ Decorative images with no informational content
-- ❌ Cost-sensitive applications with marginal visual content
+- Text-only documents
+- Scanned PDFs (requires OCR instead)
+- Decorative images with no informational content
+- Cost-sensitive applications with marginal visual content
 
 For more examples and use cases, see the main [README](../README.md) and [WattBot documentation](wattbot.md).

@@ -51,40 +51,40 @@ Example configs are provided in the `configs/` directory:
 | `configs/with_images/image_index.py` | `wattbot_build_image_index.py` | Build image-only retrieval index |
 | `configs/with_images/answer.py` | `wattbot_answer.py` | Generate answers (with images) |
 
-### Workflows (`configs/workflows/`)
+### Workflows (`workflows/`)
 
-Pre-built workflows that chain multiple scripts together:
+Pre-built workflows that chain multiple scripts together. These are runnable scripts (not configs) that orchestrate the full pipeline:
 
 | Workflow | Description |
 |----------|-------------|
-| `configs/workflows/text_pipeline.py` | Full text-only pipeline: fetch → index → answer → validate |
-| `configs/workflows/with_image_pipeline.py` | Full image pipeline: fetch → caption → index → image_index → answer → validate |
-| `configs/workflows/ensemble_runner.py` | Run multiple models in parallel, then aggregate results with voting |
+| `workflows/text_pipeline.py` | Full text-only pipeline: fetch → index → answer → validate |
+| `workflows/with_image_pipeline.py` | Full image pipeline: fetch → caption → index → image_index → answer → validate |
+| `workflows/ensemble_runner.py` | Run multiple models in parallel, then aggregate results with voting |
 
 **Running workflows:**
 
 ```bash
 # Run text-only pipeline end-to-end
-python configs/workflows/text_pipeline.py
+python workflows/text_pipeline.py
 
 # Run image-enhanced pipeline end-to-end
-python configs/workflows/with_image_pipeline.py
+python workflows/with_image_pipeline.py
 
 # Run ensemble with multiple parallel models + aggregation
-python configs/workflows/ensemble_runner.py
+python workflows/ensemble_runner.py
 ```
 
 Workflows use KohakuEngine's `Flow` API to orchestrate multiple scripts sequentially or in parallel.
 
-## 🔀 Three Retrieval Modes
+## Three Retrieval Modes
 
 KohakuRAG supports **three retrieval modes**:
 
-| Mode | Description | Database | Flags |
-|------|-------------|----------|-------|
-| **1️⃣ Text-Only** | Standard RAG with text content only | `wattbot_text_only.db` | None |
-| **2️⃣ Text + Images (Tree)** | Images in main hierarchy, extracted from sections | `wattbot_with_images.db` | `--with-images` |
-| **3️⃣ Text + Images (Dedicated)** | Mode 2 + separate image-only retrieval | `wattbot_with_images.db` | `--with-images --top-k-images 3` |
+| Mode | Description | Database | Config Setting |
+|------|-------------|----------|----------------|
+| **1. Text-Only** | Standard RAG with text content only | `wattbot_text_only.db` | None |
+| **2. Text + Images (Tree)** | Images in main hierarchy, extracted from sections | `wattbot_with_images.db` | `with_images = True` |
+| **3. Text + Images (Dedicated)** | Mode 2 + separate image-only retrieval | `wattbot_with_images.db` | `with_images = True`, `top_k_images = 3` |
 
 **Mode Comparison**:
 
@@ -111,10 +111,10 @@ All modes can coexist for A/B testing!
 
 ## 1a. Download and parse PDFs (Required for both paths)
 
-Convert every WattBot source PDF into a structured JSON payload:
+Convert every WattBot source PDF into a structured JSON payload.
 
+**Config** (`configs/fetch.py`):
 ```python
-# configs/fetch.py
 from kohakuengine import Config
 
 metadata = "data/metadata.csv"
@@ -127,6 +127,7 @@ def config_gen():
     return Config.from_globals()
 ```
 
+**Run:**
 ```bash
 kogine run scripts/wattbot_fetch_docs.py --config configs/fetch.py
 ```
@@ -141,9 +142,9 @@ Set `limit = 5` during dry runs to fetch only a few documents, and `force_downlo
 
 ---
 
-## 1b. Add image captions (🖼️ OPTIONAL - For Image-Enhanced Path Only)
+## 1b. Add image captions (OPTIONAL - For Image-Enhanced Path Only)
 
-> **📝 Skip this step for text-only workflow!**
+> **Skip this step for text-only workflow!**
 
 Generate AI captions for images in your PDFs:
 
@@ -161,8 +162,25 @@ cp .env.example .env
 
 ### Run captioning
 
+**Config** (`configs/with_images/caption.py`):
+```python
+from kohakuengine import Config
+
+docs_dir = "artifacts/docs"
+pdf_dir = "artifacts/raw_pdfs"
+output_dir = "artifacts/docs_with_images"
+db = "artifacts/wattbot_with_images.db"
+vision_model = "qwen/qwen3-vl-235b-a22b-instruct"
+max_concurrent = 5
+limit = 10  # Start with 10 docs for testing
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_add_image_captions.py --docs-dir artifacts/docs --pdf-dir artifacts/raw_pdfs --output-dir artifacts/docs_with_images --db artifacts/wattbot_with_images.db --vision-model qwen/qwen3-vl-235b-a22b-instruct --max-concurrent 5 --limit 10  # Start with 10 docs for testing
+kogine run scripts/wattbot_add_image_captions.py --config configs/with_images/caption.py
 ```
 
 **What it does** (4-phase parallel processing):
@@ -174,7 +192,7 @@ python scripts/wattbot_add_image_captions.py --docs-dir artifacts/docs --pdf-dir
 - Caption format: `[img:name WxH] AI-generated caption...`
 - Saves to `artifacts/docs_with_images/*.json`
 
-**Important**: Use the SAME `--db` path for `wattbot_build_index.py` in step 2. Images and RAG nodes share the same database file (different tables).
+**Important**: Use the SAME `db` path for `wattbot_build_index.py` in step 2. Images and RAG nodes share the same database file (different tables).
 
 **Progress output**:
 ```
@@ -225,20 +243,50 @@ See [image_rag_example.md](image_rag_example.md) for detailed configuration and 
 
 You'll create **separate database files** for each path to enable A/B testing.
 
-### 📝 Text-Only Path
+### Text-Only Path
 
-Embed the structured payloads (from step 1a) and store in a text-only database:
+Embed the structured payloads (from step 1a) and store in a text-only database.
+
+**Config** (`configs/text_only/index.py`):
+```python
+from kohakuengine import Config
+
+metadata = "data/metadata.csv"
+docs_dir = "artifacts/docs"
+db = "artifacts/wattbot_text_only.db"
+table_prefix = "wattbot_text"
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_build_index.py --metadata data/metadata.csv --docs-dir artifacts/docs --db artifacts/wattbot_text_only.db --table-prefix wattbot_text
+kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
 ```
 
 **Output**: `artifacts/wattbot_text_only.db` (~130 MB for 50 docs)
 
-### 🖼️ Image-Enhanced Path
+### Image-Enhanced Path
 
-Embed the image-captioned payloads (from step 1b) and store in a separate database:
+Embed the image-captioned payloads (from step 1b) and store in a separate database.
+
+**Config** (`configs/with_images/index.py`):
+```python
+from kohakuengine import Config
+
+metadata = "data/metadata.csv"
+docs_dir = "artifacts/docs_with_images"
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_build_index.py --metadata data/metadata.csv --docs-dir artifacts/docs_with_images --db artifacts/wattbot_with_images.db --table-prefix wattbot_img
+kogine run scripts/wattbot_build_index.py --config configs/with_images/index.py
 ```
 
 **Output**: `artifacts/wattbot_with_images.db` (~145 MB for 50 docs, +13% for captions)
@@ -270,18 +318,30 @@ ls -lh artifacts/*.db
 - No path management issues
 - KohakuVault supports multiple tables per file
 
-**Note**: If you only want to test the pipeline without PDFs, add `--use-citations` to index the citation text from `metadata.csv`.
+**Note**: If you only want to test the pipeline without PDFs, add `use_citations = True` in your config to index the citation text from `metadata.csv`.
 
 ---
 
-## 2b. Build image-only index (🖼️ OPTIONAL - For Mode 3 Only)
+## 2b. Build image-only index (OPTIONAL - For Mode 3 Only)
 
 > **Skip this for Mode 1 (text-only) and Mode 2 (images in tree)!**
 
-After building the image-enhanced index (step 2, image path), optionally add a **dedicated image-only vector table** for guaranteed image retrieval:
+After building the image-enhanced index (step 2, image path), optionally add a **dedicated image-only vector table** for guaranteed image retrieval.
 
+**Config** (`configs/with_images/image_index.py`):
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_build_image_index.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img
+kogine run scripts/wattbot_build_image_index.py --config configs/with_images/image_index.py
 ```
 
 **What it does**:
@@ -297,7 +357,7 @@ Building Image-Only Vector Index
 Image embeddings: 143
 Table: wattbot_img_images_vec
 
-Now you can use --top-k-images flag with wattbot_answer.py
+Now you can use top_k_images in your answer config
 ```
 
 **Database structure after this step**:
@@ -315,19 +375,47 @@ wattbot_with_images.db:
 
 Test retrieval quality by printing top matches and context snippets.
 
-### 1️⃣ Mode 1: Text-Only
-```bash
-python scripts/wattbot_demo_query.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text --question "How much water does GPT-3 training consume?" --top-k 5
+### Mode 1: Text-Only
+
+**Config** (`configs/demo_query.py`):
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot_text_only.db"
+table_prefix = "wattbot_text"
+question = "How much water does GPT-3 training consume?"
+top_k = 5
+
+def config_gen():
+    return Config.from_globals()
 ```
 
-### 2️⃣ Mode 2: Text + Images (Tree)
+**Run:**
 ```bash
-python scripts/wattbot_demo_query.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --question "What does Figure 3 show about GPU power consumption?" --top-k 5 --with-images
+kogine run scripts/wattbot_demo_query.py --config configs/demo_query.py
 ```
 
-### 3️⃣ Mode 3: Text + Images (Dedicated)
-```bash
-python scripts/wattbot_demo_query.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --question "What does Figure 3 show about GPU power consumption?" --top-k 5 --with-images --top-k-images 3
+### Mode 2: Text + Images (Tree)
+
+Update `configs/demo_query.py`:
+```python
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+question = "What does Figure 3 show about GPU power consumption?"
+top_k = 5
+with_images = True
+```
+
+### Mode 3: Text + Images (Dedicated)
+
+Update `configs/demo_query.py`:
+```python
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+question = "What does Figure 3 show about GPU power consumption?"
+top_k = 5
+with_images = True
+top_k_images = 3
 ```
 
 **Mode 3 output includes**:
@@ -339,28 +427,44 @@ Referenced media (3 images):
 
 ## 4. Inspect a stored node
 
-Fetch the raw text/metadata for any node ID (e.g., a paragraph). Works with both paths:
+Fetch the raw text/metadata for any node ID (e.g., a paragraph). Works with both paths.
 
-```bash
-# Text-only path
-python scripts/wattbot_inspect_node.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text --node-id amazon2023:sec3:p12
+**Config** (`configs/inspect_node.py`):
+```python
+from kohakuengine import Config
 
-# Image-enhanced path
-python scripts/wattbot_inspect_node.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --node-id amazon2023:sec3:p12
+db = "artifacts/wattbot_text_only.db"  # or wattbot_with_images.db
+table_prefix = "wattbot_text"          # or wattbot_img
+node_id = "amazon2023:sec3:p12"
+add_note = None  # Set to "text" to append a developer note
+
+def config_gen():
+    return Config.from_globals()
 ```
 
-Use `--add-note "text"` to append a developer note into the node metadata.
+**Run:**
+```bash
+kogine run scripts/wattbot_inspect_node.py --config configs/inspect_node.py
+```
 
 ## 5. Snapshot index statistics
 
-Summarize document, paragraph, and sentence counts. Works with both paths:
+Summarize document, paragraph, and sentence counts. Works with both paths.
 
+**Config** (`configs/stats.py`):
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot_text_only.db"  # or wattbot_with_images.db
+table_prefix = "wattbot_text"          # or wattbot_img
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-# Text-only path
-python scripts/wattbot_stats.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text
-
-# Image-enhanced path
-python scripts/wattbot_stats.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img
+kogine run scripts/wattbot_stats.py --config configs/stats.py
 ```
 
 ## 6. Generate WattBot answers
@@ -372,37 +476,72 @@ Run the full RAG pipeline (requires `OPENAI_API_KEY`) and produce a Kaggle-style
 - Resolves `ref_url` and `supporting_materials` from `data/metadata.csv` using the chosen `ref_id` values
 - **Automatically handles OpenAI rate limits** with intelligent retry logic
 
-### 📝 Text-Only Path
+### Text-Only Path
 
-Standard retrieval without image captions:
+**Config** (`configs/text_only/answer.py`):
+```python
+from kohakuengine import Config
 
-```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text --questions data/test_Q.csv --output artifacts/text_only_answers.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2
+db = "artifacts/wattbot_text_only.db"
+table_prefix = "wattbot_text"
+questions = "data/test_Q.csv"
+output = "artifacts/text_only_answers.csv"
+metadata = "data/metadata.csv"
+model = "gpt-4o-mini"
+top_k = 6
+max_concurrent = 10
+max_retries = 2
+
+def config_gen():
+    return Config.from_globals()
 ```
 
-### 🖼️ Mode 2: Text + Images (Tree)
-
-**Add the `--with-images` flag** to extract images from retrieved sections:
-
+**Run:**
 ```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --questions data/test_Q.csv --output artifacts/mode2_answers.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2 --with-images  # ← Extract images from retrieved sections
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
 ```
 
-### 🖼️ Mode 3: Text + Images (Dedicated)
+### Mode 2: Text + Images (Tree)
 
-**Add `--with-images --top-k-images 3`** to guarantee image retrieval:
+**Config** (`configs/with_images/answer.py`):
+```python
+from kohakuengine import Config
 
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+questions = "data/test_Q.csv"
+output = "artifacts/mode2_answers.csv"
+metadata = "data/metadata.csv"
+model = "gpt-4o-mini"
+top_k = 6
+max_concurrent = 10
+max_retries = 2
+with_images = True  # ← Extract images from retrieved sections
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --questions data/test_Q.csv --output artifacts/mode3_answers.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2 --with-images --top-k-images 3  # ← Additionally retrieve 3 images from image-only index
+kogine run scripts/wattbot_answer.py --config configs/with_images/answer.py
+```
+
+### Mode 3: Text + Images (Dedicated)
+
+Update `configs/with_images/answer.py`:
+```python
+with_images = True
+top_k_images = 3  # ← Additionally retrieve 3 images from image-only index
 ```
 
 **Mode differences**:
 - **Mode 2**: Images retrieved only if their section is in top-k text results
 - **Mode 3**: **Guarantees** 3 most relevant images, even if their sections weren't retrieved
 
-**What `--with-images` does**:
+**What `with_images = True` does**:
 - Retrieves images from sections containing matched text (always)
-- If `--top-k-images > 0`: additionally searches image-only index
+- If `top_k_images > 0`: additionally searches image-only index
 - Adds separate "Referenced media" section to prompt:
   ```
   Context snippets:
@@ -417,22 +556,20 @@ python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --table-p
 
 ### Comparing All Three Modes
 
-Run all three and compare accuracy:
+Create separate answer configs for each mode and compare accuracy:
 
 ```bash
 # Mode 1: Text-only
-python scripts/wattbot_answer.py --db artifacts/wattbot_text_only.db --output artifacts/mode1_answers.csv
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
 
 # Mode 2: Images from sections
-python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --output artifacts/mode2_answers.csv --with-images
+kogine run scripts/wattbot_answer.py --config configs/with_images/answer_mode2.py
 
 # Mode 3: Images from sections + dedicated image index
-python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --output artifacts/mode3_answers.csv --with-images --top-k-images 3  # Guarantees 3 images
+kogine run scripts/wattbot_answer.py --config configs/with_images/answer_mode3.py
 
-# Compare accuracy
-python scripts/wattbot_validate.py --pred artifacts/mode1_answers.csv
-python scripts/wattbot_validate.py --pred artifacts/mode2_answers.csv
-python scripts/wattbot_validate.py --pred artifacts/mode3_answers.csv
+# Compare accuracy (update configs/validate.py for each)
+kogine run scripts/wattbot_validate.py --config configs/validate.py
 
 # Expected results:
 # Mode 1: 0.78 (baseline)
@@ -440,19 +577,19 @@ python scripts/wattbot_validate.py --pred artifacts/mode3_answers.csv
 # Mode 3: 0.84 (+8%) - best for visual-heavy questions
 ```
 
-### Key Flags
+### Key Config Parameters
 
-- **`--with-images`**: Enable image-aware retrieval (extracts images from retrieved sections). Works with image-captioned databases.
-- **`--top-k-images`**: Number of ADDITIONAL images from image-only index (default: 0). Requires running `wattbot_build_image_index.py` first.
+- **`with_images`**: Enable image-aware retrieval (extracts images from retrieved sections). Works with image-captioned databases.
+- **`top_k_images`**: Number of ADDITIONAL images from image-only index (default: 0). Requires running `wattbot_build_image_index.py` first.
   - `0`: Only extract images from sections (Mode 2)
   - `3`: Guarantee 3 most relevant images (Mode 3)
-- `--max-concurrent`: Maximum concurrent API requests (default: 10). Set to 0 for unlimited.
-- `--planner-model`: Model for generating additional retrieval queries (defaults to `--model`).
-- `--planner-max-queries`: Total retrieval queries per question.
-- `--metadata`: Path to `metadata.csv` for resolving citations.
-- `--max-retries`: Extra attempts when model returns `is_blank`.
+- `max_concurrent`: Maximum concurrent API requests (default: 10). Set to 0 for unlimited.
+- `planner_model`: Model for generating additional retrieval queries (defaults to `model`).
+- `planner_max_queries`: Total retrieval queries per question.
+- `metadata`: Path to `metadata.csv` for resolving citations.
+- `max_retries`: Extra attempts when model returns `is_blank`.
 
-The script writes each answered row to `--output` as soon as it finishes (streaming results via async generator), so you can inspect partial results while a long run is still in progress.
+The script writes each answered row to `output` as soon as it finishes (streaming results via async generator), so you can inspect partial results while a long run is still in progress.
 
 ### Rate Limit Handling
 
@@ -483,21 +620,21 @@ The script writes each answered row to `--output` as soon as it finishes (stream
 #### Tuning for Your Rate Limits
 
 **Low TPM accounts (e.g., 500K TPM):**
-```bash
-python scripts/wattbot_answer.py --max-concurrent 5 \   # Limit concurrent requests
-    --model gpt-4o-mini --top-k 4              # Reduce tokens per request
+```python
+# configs/text_only/answer.py
+max_concurrent = 5  # Limit concurrent requests
+top_k = 4           # Reduce tokens per request
 ```
 
 **Higher TPM accounts (e.g., 2M+ TPM):**
-```bash
-python scripts/wattbot_answer.py --max-concurrent 20 \  # More concurrent requests
-    --model gpt-4o --top-k 10
+```python
+max_concurrent = 20  # More concurrent requests
+top_k = 10
 ```
 
 **Self-hosted or unlimited endpoints:**
-```bash
-python scripts/wattbot_answer.py --max-concurrent 0 \   # Unlimited concurrency
-    --model local-llama --top-k 10
+```python
+max_concurrent = 0  # Unlimited concurrency
 ```
 
 **Customizing retry behavior in code:**
@@ -521,9 +658,9 @@ asyncio.run(main())
 
 #### Best Practices
 
-1. **Start conservative**: Use `--max-concurrent 5` for your first run to understand your rate limits
+1. **Start conservative**: Use `max_concurrent = 5` for your first run to understand your rate limits
 2. **Monitor the logs**: Watch for retry messages to gauge how often you're hitting limits
-3. **Scale up gradually**: Increase `--max-concurrent` until you start seeing frequent retries, then back off
+3. **Scale up gradually**: Increase `max_concurrent` until you start seeing frequent retries, then back off
 4. **Use batch processing windows**: Run large jobs during off-peak hours to maximize throughput
 5. **Leverage async concurrency**: All scripts use `asyncio.gather()` for efficient concurrent processing
 6. **Switch backends via config**: To move from OpenAI-hosted models to self-hosted vLLM/llama.cpp or OpenAI-compatible proxies for Anthropic/Gemini, configure `OPENAI_BASE_URL` / `OPENAI_API_KEY` as described in `docs/deployment.md`.
@@ -532,27 +669,59 @@ asyncio.run(main())
 
 Because the public `data/test_Q.csv` file has no answers, use `data/train_QA.csv` as a proxy leaderboard to measure progress locally.
 
-### 📝 Text-Only Path
+### Text-Only Path
 
+**Generate predictions config** (`configs/text_only/answer.py`):
+```python
+questions = "data/train_QA.csv"
+output = "artifacts/text_only_train_preds.csv"
+# ... other settings
+```
+
+**Run:**
 ```bash
-# Generate predictions
-python scripts/wattbot_answer.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text --questions data/train_QA.csv --output artifacts/text_only_train_preds.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
+```
 
-# Validate
-python scripts/wattbot_validate.py --pred artifacts/text_only_train_preds.csv --show-errors 5 --verbose
+**Validate config** (`configs/validate.py`):
+```python
+from kohakuengine import Config
+
+truth = "data/train_QA.csv"
+pred = "artifacts/text_only_train_preds.csv"
+show_errors = 5
+verbose = True
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
+```bash
+kogine run scripts/wattbot_validate.py --config configs/validate.py
 
 # Example output:
 # WattBot score: 0.7812
 ```
 
-### 🖼️ Image-Enhanced Path
+### Image-Enhanced Path
 
+Update answer config:
+```python
+questions = "data/train_QA.csv"
+output = "artifacts/with_images_train_preds.csv"
+with_images = True
+```
+
+Update validate config:
+```python
+pred = "artifacts/with_images_train_preds.csv"
+```
+
+**Run:**
 ```bash
-# Generate predictions with images
-python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --questions data/train_QA.csv --output artifacts/with_images_train_preds.csv --model gpt-4o-mini --top-k 6 --max-concurrent 10 --max-retries 2 --with-images  # ← Important!
-
-# Validate
-python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv --show-errors 5 --verbose
+kogine run scripts/wattbot_answer.py --config configs/with_images/answer.py
+kogine run scripts/wattbot_validate.py --config configs/validate.py
 
 # Example output:
 # WattBot score: 0.8245 (+5.4% improvement!)
@@ -563,40 +732,40 @@ python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv 
 ```bash
 # Show side-by-side comparison
 echo "Text-only:"
-python scripts/wattbot_validate.py --pred artifacts/text_only_train_preds.csv --verbose
+kogine run scripts/wattbot_validate.py --config configs/validate_text.py
 
 echo -e "\nWith images:"
-python scripts/wattbot_validate.py --pred artifacts/with_images_train_preds.csv --verbose
+kogine run scripts/wattbot_validate.py --config configs/validate_images.py
 ```
 
-The validation command compares predictions to ground truth using the official WattBot scoring recipe (answer accuracy, citation overlap, and NA handling). Iterate here until the validation score looks good, then switch the `--questions` flag back to `data/test_Q.csv` to produce the submission file.
+The validation command compares predictions to ground truth using the official WattBot scoring recipe (answer accuracy, citation overlap, and NA handling). Iterate here until the validation score looks good, then switch the `questions` field back to `data/test_Q.csv` to produce the submission file.
 
 All questions are processed concurrently via `asyncio.gather()`, with results streaming to the output file as they complete.
 
 ## 8. Single-question debug mode
 
-For debugging prompt/parse issues on a single row (for example, a specific id in `train_QA.csv`), use the `--single-run-debug` flag.
+For debugging prompt/parse issues on a single row (for example, a specific id in `train_QA.csv`), use the `single_run_debug` setting.
 
-### 📝 Text-Only Path
-
-```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text --questions data/train_QA.csv --output artifacts/debug_single.csv --model gpt-4o-mini --top-k 6 --max-retries 2 --single-run-debug --question-id q054
+**Config:**
+```python
+# Add to your answer config
+single_run_debug = True
+question_id = "q054"  # Optional: specific question to debug
 ```
 
-### 🖼️ Image-Enhanced Path
-
+**Run:**
 ```bash
-python scripts/wattbot_answer.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img --questions data/train_QA.csv --output artifacts/debug_single_with_images.csv --model gpt-4o-mini --top-k 6 --max-retries 2 --single-run-debug --question-id q054 --with-images  # ← Add for image-aware debugging
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
 ```
 
 This mode:
-- Processes only one question from the input CSV (by default the first row, or the row whose `id` matches `--question-id`)
+- Processes only one question from the input CSV (by default the first row, or the row whose `id` matches `question_id`)
 - Logs every retry attempt with its `top_k` value
-- **Shows the full prompt** including any "Referenced media" section (when using `--with-images`)
+- **Shows the full prompt** including any "Referenced media" section (when using `with_images = True`)
 - Logs the exact user prompt sent to the model for each attempt
 - Logs the raw model output and the parsed structured answer for each attempt
 - Automatically handles context overflow (400 errors) by reducing `top_k` recursively
-- Writes a single prediction row to `--output` so you can inspect all intermediate steps end-to-end
+- Writes a single prediction row to `output` so you can inspect all intermediate steps end-to-end
 
 **Use this to**:
 - Debug why a specific question fails
@@ -605,14 +774,28 @@ This mode:
 
 ## 9. Aggregate multiple result files
 
-When you have multiple result CSVs from different runs (e.g., different models, parameters, or random seeds), aggregate them using majority voting:
+When you have multiple result CSVs from different runs (e.g., different models, parameters, or random seeds), aggregate them using majority voting.
 
+**Config** (`configs/aggregate.py`):
+```python
+from kohakuengine import Config
+
+inputs = [
+    "artifacts/results/run1.csv",
+    "artifacts/results/run2.csv",
+    "artifacts/results/run3.csv",
+]
+output = "artifacts/aggregated_preds.csv"
+ref_mode = "union"     # or "intersection"
+tiebreak = "first"     # or "blank"
+
+def config_gen():
+    return Config.from_globals()
+```
+
+**Run:**
 ```bash
-python scripts/wattbot_aggregate.py \
-    artifacts/results/*.csv \
-    -o artifacts/aggregated_preds.csv \
-    --ref-mode union \
-    --tiebreak first
+kogine run scripts/wattbot_aggregate.py --config configs/aggregate.py
 ```
 
 **What it does**:
@@ -622,37 +805,37 @@ python scripts/wattbot_aggregate.py \
 
 ### Options
 
-| Flag | Values | Description |
-|------|--------|-------------|
-| `--ref-mode` | `union` (default), `intersection` | How to combine ref_ids from matching answers |
-| `--tiebreak` | `first` (default), `blank` | What to do when all answers differ |
+| Setting | Values | Description |
+|---------|--------|-------------|
+| `ref_mode` | `"union"` (default), `"intersection"` | How to combine ref_ids from matching answers |
+| `tiebreak` | `"first"` (default), `"blank"` | What to do when all answers differ |
 
 ### Tiebreak modes
 
-**`--tiebreak first`** (default):
+**`tiebreak = "first"`** (default):
 - When all CSVs give different answers, use the first CSV's answer
 - Useful when you trust earlier runs more
 
-**`--tiebreak blank`**:
+**`tiebreak = "blank"`**:
 - When all CSVs give different answers, set all fields to `is_blank`
 - Conservative approach when uncertain
 
 ### Example workflow
 
-```bash
-# Run multiple models
-python scripts/wattbot_answer.py --model gpt-4o-mini --output artifacts/results/gpt4o_mini.csv ...
-python scripts/wattbot_answer.py --model gpt-4o --output artifacts/results/gpt4o.csv ...
-python scripts/wattbot_answer.py --model claude-3-5-sonnet --output artifacts/results/claude.csv ...
+```python
+# Create multiple answer configs with different models
+# configs/sweeps/gpt4o_mini.py, configs/sweeps/gpt4o.py, configs/sweeps/claude.py
+
+# Run them (or use workflow for parallel execution)
+kogine run scripts/wattbot_answer.py --config configs/sweeps/gpt4o_mini.py
+kogine run scripts/wattbot_answer.py --config configs/sweeps/gpt4o.py
+kogine run scripts/wattbot_answer.py --config configs/sweeps/claude.py
 
 # Aggregate results
-python scripts/wattbot_aggregate.py \
-    artifacts/results/*.csv \
-    -o artifacts/ensemble_preds.csv \
-    --ref-mode union
+kogine run scripts/wattbot_aggregate.py --config configs/aggregate.py
 
 # Validate aggregated results
-python scripts/wattbot_validate.py --pred artifacts/ensemble_preds.csv --verbose
+kogine run scripts/wattbot_validate.py --config configs/validate.py
 ```
 
 ## 10. Using KohakuEngine Configs
@@ -692,25 +875,49 @@ def config_gen():
 ```
 configs/
 ├── text_only/
+│   ├── index.py            # Text-only indexing config
 │   └── answer.py           # Text-only answer config
 ├── with_images/
+│   ├── caption.py          # Image captioning config
+│   ├── index.py            # Image-enhanced indexing config
+│   ├── image_index.py      # Image-only index config
 │   └── answer.py           # Image-enhanced answer config
-├── sweeps/
-│   └── model_sweep.py      # Compare multiple models
-└── workflows/
-    ├── text_pipeline.py    # Full fetch→index→answer→validate
-    └── ensemble_runner.py  # Parallel models + aggregation
+├── fetch.py                # Document fetching config
+├── validate.py             # Validation config
+├── aggregate.py            # Aggregation config
+├── stats.py                # Statistics config
+├── demo_query.py           # Demo query config
+├── inspect_node.py         # Node inspection config
+└── smoke.py                # Smoke test config
+
+workflows/                      # Runnable workflow scripts
+├── text_pipeline.py            # Full fetch→index→answer→validate
+├── with_image_pipeline.py      # Full image pipeline
+└── ensemble_runner.py          # Parallel models + aggregation
 ```
 
 ### Running Sweeps
 
 Generate multiple configs from one file for hyperparameter sweeps:
 
-```bash
-# Run model comparison in parallel
-kogine workflow parallel scripts/wattbot_answer.py \
-    --config configs/sweeps/model_sweep.py \
-    --workers 3
+```python
+# configs/sweeps/model_sweep.py
+from kohakuengine import Config
+
+base_config = {
+    "db": "artifacts/wattbot.db",
+    "questions": "data/test_Q.csv",
+    "top_k": 6,
+}
+
+models = ["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet"]
+
+def config_gen():
+    for model in models:
+        config = base_config.copy()
+        config["model"] = model
+        config["output"] = f"artifacts/results/{model.replace('/', '_')}.csv"
+        yield Config(globals_dict=config)
 ```
 
 ### Workflow Orchestration
@@ -718,11 +925,20 @@ kogine workflow parallel scripts/wattbot_answer.py \
 Chain multiple scripts with the Flow API:
 
 ```python
-# configs/workflows/my_workflow.py
+# workflows/my_workflow.py
 from kohakuengine import Config, Script, Flow
 
-fetch_config = Config(globals_dict={"metadata": "data/metadata.csv", ...})
-answer_config = Config(globals_dict={"db": "artifacts/wattbot.db", ...})
+fetch_config = Config(globals_dict={
+    "metadata": "data/metadata.csv",
+    "pdf_dir": "artifacts/raw_pdfs",
+    "output_dir": "artifacts/docs",
+})
+
+answer_config = Config(globals_dict={
+    "db": "artifacts/wattbot.db",
+    "questions": "data/test_Q.csv",
+    "output": "artifacts/answers.csv",
+})
 
 if __name__ == "__main__":
     scripts = [
@@ -743,7 +959,7 @@ Run multiple models and aggregate with majority voting:
 # 1. Multiple models in parallel
 # 2. Aggregates results with wattbot_aggregate.py
 # 3. Validates aggregated predictions
-python configs/workflows/ensemble_runner.py
+python workflows/ensemble_runner.py
 ```
 
 ### Benefits
@@ -751,4 +967,4 @@ python configs/workflows/ensemble_runner.py
 - **Reproducible**: Config files are version-controlled Python
 - **Composable**: Chain scripts into workflows
 - **Parallel**: Run sweeps and ensembles concurrently
-- **No code changes**: Scripts work with both CLI args and configs
+- **No code changes**: Scripts work with configs only
