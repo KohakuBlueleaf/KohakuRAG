@@ -5,7 +5,7 @@ This script uses 3-phase parallel processing:
 2. Compress ALL images (parallel)
 3. Caption ALL images (parallel)
 
-Usage:
+Usage (CLI):
     python scripts/wattbot_add_image_captions.py \\
         --docs-dir artifacts/docs \\
         --pdf-dir artifacts/raw_pdfs \\
@@ -13,9 +13,11 @@ Usage:
         --db artifacts/wattbot_with_images.db \\
         --vision-model qwen/qwen3-vl-235b-a22b-instruct \\
         --limit 10
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_add_image_captions.py --config configs/caption_config.py
 """
 
-import argparse
 import asyncio
 import json
 import sys
@@ -35,6 +37,19 @@ from kohakurag.parsers import dict_to_payload, payload_to_dict
 from kohakurag.pdf_utils import _extract_images
 from kohakurag.types import SentencePayload
 from kohakurag.vision import OpenAIVisionModel
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+docs_dir = "artifacts/docs"
+pdf_dir = "artifacts/raw_pdfs"
+output_dir = "artifacts/docs_with_images"
+db = "artifacts/wattbot_with_images.db"
+vision_model = "qwen/qwen3-vl-235b-a22b-instruct"
+limit = 0
+max_concurrent = 5
 
 
 @dataclass
@@ -172,84 +187,42 @@ def compress_one_image(task: ImageTask, idx: int, total: int) -> ImageTask:
 
 async def main() -> None:
     """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Add vision model captions to images (parallel batch mode)"
-    )
-    parser.add_argument(
-        "--docs-dir",
-        type=Path,
-        default=Path("artifacts/docs"),
-        help="Input directory with JSON payloads",
-    )
-    parser.add_argument(
-        "--pdf-dir",
-        type=Path,
-        default=Path("artifacts/raw_pdfs"),
-        help="Directory with source PDFs",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("artifacts/docs_with_images"),
-        help="Output directory for updated payloads",
-    )
-    parser.add_argument(
-        "--db",
-        type=Path,
-        default=Path("artifacts/wattbot_with_images.db"),
-        help="Database for RAG nodes AND compressed images",
-    )
-    parser.add_argument(
-        "--vision-model",
-        default="qwen/qwen3-vl-235b-a22b-instruct",
-        help="Vision model name",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=0,
-        help="Process only first N documents (0 = all)",
-    )
-    parser.add_argument(
-        "--max-concurrent",
-        type=int,
-        default=5,
-        help="Max concurrent vision API calls",
-    )
-
-    args = parser.parse_args()
+    docs_dir_path = Path(docs_dir)
+    pdf_dir_path = Path(pdf_dir)
+    output_dir_path = Path(output_dir)
+    db_path = Path(db)
 
     # Validate
-    if not args.docs_dir.exists():
-        print(f"ERROR: {args.docs_dir} not found")
+    if not docs_dir_path.exists():
+        print(f"ERROR: {docs_dir_path} not found")
         sys.exit(1)
-    if not args.pdf_dir.exists():
-        print(f"ERROR: {args.pdf_dir} not found")
+    if not pdf_dir_path.exists():
+        print(f"ERROR: {pdf_dir_path} not found")
         sys.exit(1)
 
-    json_files = sorted(args.docs_dir.glob("*.json"))
-    if args.limit > 0:
-        json_files = json_files[: args.limit]
+    json_files = sorted(docs_dir_path.glob("*.json"))
+    if limit > 0:
+        json_files = json_files[:limit]
 
     if not json_files:
-        print(f"No JSON files in {args.docs_dir}")
+        print(f"No JSON files in {docs_dir_path}")
         sys.exit(1)
 
     print("=" * 60)
     print("KohakuRAG - Parallel Batch Image Captioning")
     print("=" * 60)
     print(f"Documents: {len(json_files)}")
-    print(f"Database:  {args.db}")
-    print(f"Model:     {args.vision_model}")
-    print(f"Concurrency: {args.max_concurrent}")
+    print(f"Database:  {db_path}")
+    print(f"Model:     {vision_model}")
+    print(f"Concurrency: {max_concurrent}")
     print("=" * 60)
 
     # Initialize components
-    vision_model = OpenAIVisionModel(
-        model=args.vision_model,
-        max_concurrent=args.max_concurrent,
+    vision_client = OpenAIVisionModel(
+        model=vision_model,
+        max_concurrent=max_concurrent,
     )
-    image_store = ImageStore(args.db, table="image_blobs")
+    image_store = ImageStore(db_path, table="image_blobs")
 
     executor = ThreadPoolExecutor(max_workers=8)
     loop = asyncio.get_event_loop()
@@ -269,7 +242,7 @@ async def main() -> None:
             executor,
             read_images_from_document,
             json_path,
-            args.pdf_dir,
+            pdf_dir_path,
             i + 1,
             len(json_files),
         )
@@ -282,7 +255,7 @@ async def main() -> None:
     all_tasks = []
     doc_to_json = {}
     for doc_id, tasks in results:
-        doc_to_json[doc_id] = args.docs_dir / f"{doc_id}.json"
+        doc_to_json[doc_id] = docs_dir_path / f"{doc_id}.json"
         all_tasks.extend(tasks)
 
     t_read = time.time()
@@ -336,7 +309,7 @@ async def main() -> None:
             return task
 
         try:
-            caption = await vision_model.caption(task.compressed_data)
+            caption = await vision_client.caption(task.compressed_data)
             task.caption = caption
             print(
                 f"  [{idx}/{len(successful)}] ✓ {task.doc_id} p{task.page_num}:i{task.img_idx}"
@@ -448,7 +421,7 @@ async def main() -> None:
                         print(f"    ⚠️  Failed to store {task.storage_key}: {e}")
 
             # Save updated payload
-            output_path = args.output_dir / f"{doc_id}.json"
+            output_path = output_dir_path / f"{doc_id}.json"
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(
                 json.dumps(payload_to_dict(payload), ensure_ascii=False, indent=2),

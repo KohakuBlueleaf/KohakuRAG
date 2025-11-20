@@ -7,15 +7,17 @@ This script demonstrates end-to-end RAG usage:
 - Handles rate limits automatically
 - Supports concurrent processing with asyncio.gather()
 
-Usage:
+Usage (CLI):
     python scripts/wattbot_answer.py \\
         --db artifacts/wattbot.db \\
         --questions data/test_Q.csv \\
         --output artifacts/answers.csv \\
         --model gpt-4o-mini
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_answer.py --config configs/answer_config.py
 """
 
-import argparse
 import asyncio
 import csv
 import json
@@ -35,6 +37,27 @@ from kohakurag.llm import OpenAIChatModel
 
 Row = dict[str, Any]
 BLANK_TOKEN = "is_blank"
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+questions = "data/test_Q.csv"
+output = "artifacts/wattbot_answers.csv"
+model = "gpt-4o-mini"
+top_k = 5
+planner_model = None  # Falls back to model
+planner_max_queries = 3
+metadata = "data/metadata.csv"
+max_retries = 3
+max_concurrent = 10
+single_run_debug = False
+question_id = None
+with_images = False
+top_k_images = 0
 
 # ============================================================================
 # PROMPT TEMPLATES
@@ -523,73 +546,6 @@ async def answer_questions(
 
 
 # ============================================================================
-# CLI ARGUMENT PARSING
-# ============================================================================
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Answer WattBot questions.")
-    parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
-    parser.add_argument("--table-prefix", default="wattbot")
-    parser.add_argument("--questions", type=Path, default=Path("data/test_Q.csv"))
-    parser.add_argument(
-        "--output", type=Path, default=Path("artifacts/wattbot_answers.csv")
-    )
-    parser.add_argument("--model", default="gpt-4o-mini")
-    parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument(
-        "--planner-model",
-        default=None,
-        help="Model used for generating follow-up retrieval queries (defaults to --model).",
-    )
-    parser.add_argument(
-        "--planner-max-queries",
-        type=int,
-        default=3,
-        help="Total number of queries (original + LLM-generated) to issue per question.",
-    )
-    parser.add_argument(
-        "--metadata",
-        type=Path,
-        default=Path("data/metadata.csv"),
-        help="CSV mapping document ids to URLs/citations.",
-    )
-    parser.add_argument(
-        "--max-retries",
-        type=int,
-        default=3,
-        help="Number of extra retrieval attempts when the model returns is_blank.",
-    )
-    parser.add_argument(
-        "--max-concurrent",
-        type=int,
-        default=10,
-        help="Maximum number of concurrent API requests (default: 10). Set to 0 or negative to disable rate limiting.",
-    )
-    parser.add_argument(
-        "--single-run-debug",
-        action="store_true",
-        help="Only process the first question and print intermediate details.",
-    )
-    parser.add_argument(
-        "--question-id",
-        help="Question id to debug in single-run mode (defaults to the first row).",
-    )
-    parser.add_argument(
-        "--with-images",
-        action="store_true",
-        help="Enable image-aware retrieval (requires documents with captioned images).",
-    )
-    parser.add_argument(
-        "--top-k-images",
-        type=int,
-        default=0,
-        help="Number of images to retrieve from image-only index (0 = only from sections). Requires wattbot_build_image_index.py to be run first.",
-    )
-    return parser.parse_args()
-
-
-# ============================================================================
 # SINGLE-RUN DEBUG MODE
 # ============================================================================
 
@@ -721,50 +677,51 @@ async def run_all_questions(
 
 async def main() -> None:
     """Main entry point: load data, create pipeline, process questions."""
-    args = parse_args()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Writing output to: {output_path}")
 
     # Load input data
-    rows, columns = load_questions(args.questions)
-    metadata = load_metadata_records(args.metadata)
+    rows, columns = load_questions(Path(questions))
+    metadata_records = load_metadata_records(Path(metadata))
 
     # Build immutable config
     config = AppConfig(
-        db=args.db,
-        table_prefix=args.table_prefix,
-        model=args.model,
-        top_k=args.top_k,
-        planner_model=args.planner_model or args.model,
-        planner_max_queries=args.planner_max_queries,
-        metadata=metadata,
-        max_retries=max(0, args.max_retries),
-        max_concurrent=args.max_concurrent,  # Allow 0 or negative to disable rate limiting
-        with_images=args.with_images,
-        top_k_images=args.top_k_images,
+        db=Path(db),
+        table_prefix=table_prefix,
+        model=model,
+        top_k=top_k,
+        planner_model=planner_model or model,
+        planner_max_queries=planner_max_queries,
+        metadata=metadata_records,
+        max_retries=max(0, max_retries),
+        max_concurrent=max_concurrent,
+        with_images=with_images,
+        top_k_images=top_k_images,
     )
 
     # Create shared pipeline
     pipeline = create_pipeline(config)
 
-    with args.output.open("w", newline="", encoding="utf-8") as f_out:
+    with output_path.open("w", newline="", encoding="utf-8") as f_out:
         writer = csv.DictWriter(f_out, fieldnames=list(columns))
         writer.writeheader()
 
         # DEBUG MODE: Process one question with detailed logging
-        if args.single_run_debug:
+        if single_run_debug:
             if not rows:
                 raise ValueError("No questions found for single-run debug.")
 
             # Select question to debug (by ID or first row)
-            if args.question_id:
+            if question_id:
                 target_row: Row | None = None
                 for row in rows:
-                    if row.get("id") == args.question_id:
+                    if row.get("id") == question_id:
                         target_row = row
                         break
                 if target_row is None:
                     raise ValueError(
-                        f"Question id {args.question_id} not found in {args.questions}"
+                        f"Question id {question_id} not found in {questions}"
                     )
                 first_row = target_row
             else:
@@ -779,5 +736,10 @@ async def main() -> None:
             await run_all_questions(rows, columns, config, pipeline, writer, f_out)
 
 
-if __name__ == "__main__":
+def entry_point():
+    print(output)
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    entry_point()

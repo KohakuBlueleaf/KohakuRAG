@@ -4,9 +4,14 @@ Aggregate multiple result CSVs using majority voting.
 
 For each question, selects the most frequent answer_value as the final answer.
 Reference IDs can be aggregated using union or intersection of selected answers.
+
+Usage (CLI):
+    python scripts/wattbot_aggregate.py artifacts/results/*.csv -o aggregated.csv
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_aggregate.py --config configs/aggregate_config.py
 """
 
-import argparse
 import csv
 import ast
 import sys
@@ -14,6 +19,16 @@ import glob
 from pathlib import Path
 from collections import Counter
 from typing import Literal
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+inputs: list[str] = []  # Input CSV files (required)
+output = "artifacts/aggregated_preds.csv"
+ref_mode: Literal["union", "intersection"] = "union"
+tiebreak: Literal["blank", "first"] = "first"
 
 # Column names matching existing scripts
 COLUMNS = [
@@ -199,45 +214,17 @@ def aggregate_results(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Aggregate multiple result CSVs using majority voting"
-    )
-    parser.add_argument(
-        "inputs",
-        nargs="+",
-        type=Path,
-        help="Input CSV files to aggregate",
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        required=True,
-        help="Output CSV path",
-    )
-    parser.add_argument(
-        "--ref-mode",
-        choices=["union", "intersection"],
-        default="union",
-        help="How to aggregate ref_ids from selected answers (default: union)",
-    )
-    parser.add_argument(
-        "--tiebreak",
-        choices=["blank", "first"],
-        default="first",
-        help="What to do when all answers differ: 'blank' uses is_blank, 'first' uses first CSV's answer (default: first)",
-    )
-
-    args = parser.parse_args()
+    if not inputs:
+        raise ValueError("inputs must be set in config")
 
     # Expand glob patterns (needed for Windows)
     expanded_inputs = []
-    for pattern in args.inputs:
+    for pattern in inputs:
         matches = glob.glob(str(pattern))
         if matches:
             expanded_inputs.extend(Path(m) for m in matches)
         else:
-            expanded_inputs.append(pattern)
+            expanded_inputs.append(Path(pattern))
 
     # Validate inputs exist
     for path in expanded_inputs:
@@ -250,20 +237,21 @@ def main():
         sys.exit(1)
 
     print(f"Aggregating {len(expanded_inputs)} result files...")
-    print(f"  ref_id mode: {args.ref_mode}")
-    print(f"  tiebreak mode: {args.tiebreak}")
+    print(f"  ref_id mode: {ref_mode}")
+    print(f"  tiebreak mode: {tiebreak}")
     print()
 
     # Aggregate results
     results = aggregate_results(
         expanded_inputs,
-        ref_mode=args.ref_mode,
-        tiebreak_mode=args.tiebreak,
+        ref_mode=ref_mode,
+        tiebreak_mode=tiebreak,
     )
 
     # Write output
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, "w", encoding="utf-8", newline="") as f:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         writer.writeheader()
         for row in results:
@@ -271,7 +259,7 @@ def main():
             out_row = {col: row.get(col, "is_blank") for col in COLUMNS}
             writer.writerow(out_row)
 
-    print(f"\nAggregated {len(results)} questions to {args.output}")
+    print(f"\nAggregated {len(results)} questions to {output_path}")
 
 
 if __name__ == "__main__":

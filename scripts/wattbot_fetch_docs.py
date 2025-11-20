@@ -1,6 +1,12 @@
-"""Download WattBot PDFs and convert them into structured JSON payloads."""
+"""Download WattBot PDFs and convert them into structured JSON payloads.
 
-import argparse
+Usage (CLI):
+    python scripts/wattbot_fetch_docs.py --metadata data/metadata.csv --limit 10
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_fetch_docs.py --config configs/fetch_config.py
+"""
+
 import asyncio
 import csv
 import json
@@ -12,6 +18,17 @@ import httpx
 
 from kohakurag.parsers import payload_to_dict
 from kohakurag.pdf_utils import pdf_to_document_payload
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+metadata = "data/metadata.csv"
+pdf_dir = "artifacts/raw_pdfs"
+output_dir = "artifacts/docs"
+force_download = False
+limit = 0
 
 
 def load_metadata(path: Path) -> list[dict[str, str]]:
@@ -60,20 +77,8 @@ async def download_pdf(
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Fetch WattBot source PDFs and convert to structured JSON."
-    )
-    parser.add_argument("--metadata", type=Path, default=Path("data/metadata.csv"))
-    parser.add_argument("--pdf-dir", type=Path, default=Path("artifacts/raw_pdfs"))
-    parser.add_argument("--output-dir", type=Path, default=Path("artifacts/docs"))
-    parser.add_argument("--force-download", action="store_true")
-    parser.add_argument(
-        "--limit", type=int, default=0, help="Process only N documents (for testing)."
-    )
-    args = parser.parse_args()
-
     # Load document metadata
-    rows = load_metadata(args.metadata)
+    rows = load_metadata(Path(metadata))
     processed = 0
     skipped = 0
 
@@ -99,12 +104,12 @@ async def main() -> None:
                 )
                 continue
 
-            pdf_path = args.pdf_dir / f"{doc_id}.pdf"
-            json_path = args.output_dir / f"{doc_id}.json"
+            pdf_path = Path(pdf_dir) / f"{doc_id}.pdf"
+            json_path = Path(output_dir) / f"{doc_id}.json"
 
             try:
                 # Download PDF
-                await download_pdf(url, pdf_path, client, force=args.force_download)
+                await download_pdf(url, pdf_path, client, force=force_download)
 
                 # Parse PDF into structured payload
                 payload = pdf_to_document_payload(
@@ -136,12 +141,12 @@ async def main() -> None:
                 print(f"[error] {doc_id}: conversion failed ({exc})", file=sys.stderr)
 
             # Respect limit for testing
-            if args.limit and processed >= args.limit:
+            if limit and processed >= limit:
                 break
 
     print(
         f"Processed {processed} documents, skipped {skipped}. "
-        f"Structured docs saved under {args.output_dir}"
+        f"Structured docs saved under {output_dir}"
     )
 
 

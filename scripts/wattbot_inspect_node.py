@@ -1,27 +1,35 @@
-"""Inspect and optionally update a node stored in the WattBot index."""
+"""Inspect and optionally update a node stored in the WattBot index.
 
-import argparse
+Usage (CLI):
+    python scripts/wattbot_inspect_node.py --node-id amazon2023:sec3:p12
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_inspect_node.py --config configs/inspect_config.py
+"""
+
 import asyncio
 from pathlib import Path
 
 from kohakurag import StoredNode
 from kohakurag.datastore import KVaultNodeStore
 
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+node_id = ""  # Required
+add_note = None
+
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Inspect a node from the WattBot index."
-    )
-    parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
-    parser.add_argument("--table-prefix", default="wattbot")
-    parser.add_argument("--node-id", required=True)
-    parser.add_argument(
-        "--add-note", help="Append a developer note to the node metadata."
-    )
-    args = parser.parse_args()
+    if not node_id:
+        raise ValueError("node_id must be set in config")
 
-    store = KVaultNodeStore(args.db, table_prefix=args.table_prefix, dimensions=None)
-    node = await store.get_node(args.node_id)
+    store = KVaultNodeStore(Path(db), table_prefix=table_prefix, dimensions=None)
+    node = await store.get_node(node_id)
 
     print(f"Node: {node.node_id}")
     print(f"Kind: {node.kind.value}")
@@ -31,10 +39,10 @@ async def main() -> None:
     print(f"Metadata: {node.metadata}")
     print(f"Text preview:\n{node.text[:500]}")
 
-    if args.add_note:
+    if add_note:
         metadata = dict(node.metadata)
         notes = list(metadata.get("dev_notes", []))
-        notes.append(args.add_note)
+        notes.append(add_note)
         metadata["dev_notes"] = notes
         updated = StoredNode(
             node_id=node.node_id,

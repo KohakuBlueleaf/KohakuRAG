@@ -1,11 +1,25 @@
-"""Minimal smoke test that indexes metadata citations and answers one question."""
+"""Minimal smoke test that indexes metadata citations and answers one question.
 
-import argparse
+Usage (CLI):
+    python scripts/wattbot_smoke.py --metadata data/metadata.csv
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_smoke.py --config configs/smoke_config.py
+"""
+
 import asyncio
 import csv
 from pathlib import Path
 
 from kohakurag import DocumentIndexer, RAGPipeline, text_to_payload
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+metadata = "data/metadata.csv"
+question = "What is the ML.ENERGY benchmark?"
 
 
 def load_documents(metadata_path: Path):
@@ -32,28 +46,14 @@ def load_documents(metadata_path: Path):
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="WattBot smoke test.")
-    parser.add_argument(
-        "--metadata",
-        type=Path,
-        default=Path("data/metadata.csv"),
-        help="Path to metadata CSV.",
-    )
-    parser.add_argument(
-        "--question",
-        default="What is the ML.ENERGY benchmark?",
-        help="Question to ask.",
-    )
-    args = parser.parse_args()
-
-    documents = load_documents(args.metadata)
+    documents = load_documents(Path(metadata))
     indexer = DocumentIndexer()
     pipeline = RAGPipeline()
     for payload in documents:
         nodes = await indexer.index(payload)
         await pipeline.index_documents(nodes)
 
-    answer = await pipeline.answer(args.question)
+    answer = await pipeline.answer(question)
     print("Question:", answer["question"])
     print("Response:\n", answer["response"])
     print("\nTop snippets:")

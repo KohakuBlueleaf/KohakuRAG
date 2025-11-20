@@ -9,20 +9,15 @@ Workflow:
 2. Text + images in tree:  wattbot_with_images.db (images as part of main hierarchy)
 3. + Image-only retrieval: Run THIS script on wattbot_with_images.db
 
-Usage:
-    # First, build the image-enhanced index normally
-    python scripts/wattbot_build_index.py \\
-        --docs-dir artifacts/docs_with_images \\
-        --db artifacts/wattbot_with_images.db \\
-        --table-prefix wattbot_img
-
-    # Then, optionally add image-only retrieval table
+Usage (CLI):
     python scripts/wattbot_build_image_index.py \\
         --db artifacts/wattbot_with_images.db \\
         --table-prefix wattbot_img
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_build_image_index.py --config configs/image_index_config.py
 """
 
-import argparse
 import asyncio
 from pathlib import Path
 
@@ -32,43 +27,32 @@ from kohakuvault import VectorKVault
 from kohakurag import NodeKind
 from kohakurag.datastore import KVaultNodeStore
 
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+db = "artifacts/wattbot_with_images.db"
+table_prefix = "wattbot_img"
+image_table = None  # Default: {prefix}_images_vec
+
 
 async def main() -> None:
     """Build image-only vector index from existing node store."""
-    parser = argparse.ArgumentParser(
-        description="Build image-only vector index for dedicated image retrieval"
-    )
-    parser.add_argument(
-        "--db",
-        type=Path,
-        default=Path("artifacts/wattbot_with_images.db"),
-        help="Existing database with image-enhanced index",
-    )
-    parser.add_argument(
-        "--table-prefix",
-        default="wattbot_img",
-        help="Table prefix used in main index",
-    )
-    parser.add_argument(
-        "--image-table",
-        default=None,
-        help="Table name for image-only vectors (default: {prefix}_images_vec)",
-    )
-    args = parser.parse_args()
-
     # Derive image table name
-    image_table = args.image_table or f"{args.table_prefix}_images_vec"
+    actual_image_table = image_table or f"{table_prefix}_images_vec"
+    db_path = Path(db)
 
     print("=" * 60)
     print("Building Image-Only Vector Index")
     print("=" * 60)
-    print(f"Database:     {args.db}")
-    print(f"Main prefix:  {args.table_prefix}")
-    print(f"Image table:  {image_table}")
+    print(f"Database:     {db_path}")
+    print(f"Main prefix:  {table_prefix}")
+    print(f"Image table:  {actual_image_table}")
     print("=" * 60)
 
-    if not args.db.exists():
-        print(f"\nERROR: Database not found: {args.db}")
+    if not db_path.exists():
+        print(f"\nERROR: Database not found: {db_path}")
         print("Run wattbot_build_index.py first to create the main index.")
         sys.exit(1)
 
@@ -76,8 +60,8 @@ async def main() -> None:
     print("\nLoading existing node store...")
     try:
         store = KVaultNodeStore(
-            args.db,
-            table_prefix=args.table_prefix,
+            db_path,
+            table_prefix=table_prefix,
             dimensions=None,  # Auto-detect
         )
     except Exception as e:
@@ -119,12 +103,12 @@ async def main() -> None:
         sys.exit(0)
 
     # Create image-only vector table
-    print(f"\nCreating image-only vector table: {image_table}")
+    print(f"\nCreating image-only vector table: {actual_image_table}")
 
     try:
         image_vec_store = VectorKVault(
-            str(args.db),
-            table=image_table,
+            str(db_path),
+            table=actual_image_table,
             dimensions=store.dimensions,
             metric="cosine",
         )
@@ -154,7 +138,7 @@ async def main() -> None:
     print("Image-Only Index Complete")
     print("=" * 60)
     print(f"Image embeddings: {inserted}")
-    print(f"Table: {image_table}")
+    print(f"Table: {actual_image_table}")
     print("\nNow you can use --top-k-images flag with wattbot_answer.py")
     print("=" * 60)
 

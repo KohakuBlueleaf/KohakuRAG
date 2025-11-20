@@ -1,6 +1,12 @@
-"""Build a KohakuVault-backed index for WattBot documents."""
+"""Build a KohakuVault-backed index for WattBot documents.
 
-import argparse
+Usage (CLI):
+    python scripts/wattbot_build_index.py --docs-dir artifacts/docs --db artifacts/wattbot.db
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_build_index.py --config configs/index_config.py
+"""
+
 import asyncio
 import csv
 import json
@@ -13,6 +19,17 @@ from kohakurag import (
     text_to_payload,
 )
 from kohakurag.datastore import KVaultNodeStore
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+metadata = "data/metadata.csv"
+docs_dir = "artifacts/docs"
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+use_citations = False
 
 
 def load_metadata(path: Path) -> dict[str, dict[str, str]]:
@@ -70,42 +87,17 @@ def iter_documents(
 
 async def main() -> None:
     """Build the hierarchical index from documents."""
-    parser = argparse.ArgumentParser(description="Build WattBot KohakuVault index.")
-    parser.add_argument("--metadata", type=Path, default=Path("data/metadata.csv"))
-    parser.add_argument(
-        "--docs-dir",
-        type=Path,
-        default=Path("artifacts/docs"),
-        help="Directory of structured JSON documents produced by wattbot_fetch_docs.py.",
-    )
-    parser.add_argument(
-        "--db",
-        type=Path,
-        default=Path("artifacts/wattbot.db"),
-        help="SQLite database file for KohakuVault.",
-    )
-    parser.add_argument(
-        "--table-prefix",
-        default="wattbot",
-        help="Logical prefix for KohakuVault tables.",
-    )
-    parser.add_argument(
-        "--use-citations",
-        action="store_true",
-        help="Fallback to metadata citation text when structured docs are unavailable.",
-    )
-    args = parser.parse_args()
-
     # Load documents to index
-    metadata = load_metadata(args.metadata)
-    documents = list(iter_documents(args.docs_dir, metadata, args.use_citations))
+    metadata_records = load_metadata(Path(metadata))
+    documents = list(iter_documents(Path(docs_dir), metadata_records, use_citations))
     total_docs = len(documents)
 
     if not total_docs:
         raise SystemExit("No documents found to index.")
 
     # Setup indexer and datastore
-    args.db.parent.mkdir(parents=True, exist_ok=True)
+    db_path = Path(db)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     indexer = DocumentIndexer()
     store: KVaultNodeStore | None = None  # Lazy init after first document
     total_nodes = 0
@@ -123,8 +115,8 @@ async def main() -> None:
         # Initialize store on first document (infer dimensions)
         if store is None:
             store = KVaultNodeStore(
-                args.db,
-                table_prefix=args.table_prefix,
+                db_path,
+                table_prefix=table_prefix,
                 dimensions=nodes[0].embedding.shape[0],
             )
 
@@ -135,7 +127,7 @@ async def main() -> None:
             f"  -> added {len(nodes)} nodes (running total {total_nodes})", flush=True
         )
 
-    print(f"Indexed {len(documents)} documents with {total_nodes} nodes into {args.db}")
+    print(f"Indexed {len(documents)} documents with {total_nodes} nodes into {db_path}")
 
 
 if __name__ == "__main__":

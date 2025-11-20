@@ -6,14 +6,16 @@ This script demonstrates RAG retrieval without LLM generation:
 - Shows hierarchical context expansion
 - Displays results in formatted tables
 
-Usage:
+Usage (CLI):
     python scripts/wattbot_demo_query.py \\
         --db artifacts/wattbot.db \\
         --question "How much water does GPT-3 training consume?" \\
         --top-k 10
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_demo_query.py --config configs/demo_query_config.py
 """
 
-import argparse
 import asyncio
 import textwrap
 from pathlib import Path
@@ -21,6 +23,18 @@ from typing import Sequence
 
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+question = ""  # Required
+top_k = 5
+with_images = False
+top_k_images = 0
 
 
 # ============================================================================
@@ -79,41 +93,26 @@ def _compact_node_id(node_id: str, doc_id: str | None) -> str:
 
 async def main() -> None:
     """Run a demo query and display results."""
-    parser = argparse.ArgumentParser(description="Query the WattBot KohakuVault index.")
-    parser.add_argument("--db", type=Path, default=Path("artifacts/wattbot.db"))
-    parser.add_argument("--table-prefix", default="wattbot")
-    parser.add_argument("--question", required=True)
-    parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument(
-        "--with-images",
-        action="store_true",
-        help="Enable image-aware retrieval (extract images from sections)",
-    )
-    parser.add_argument(
-        "--top-k-images",
-        type=int,
-        default=0,
-        help="Number of images from image-only index (requires wattbot_build_image_index.py)",
-    )
-    args = parser.parse_args()
+    if not question:
+        raise ValueError("question must be set in config")
 
     # Load datastore and create pipeline
     store = KVaultNodeStore(
-        args.db,
-        table_prefix=args.table_prefix,
+        Path(db),
+        table_prefix=table_prefix,
         dimensions=None,
     )
     pipeline = RAGPipeline(store=store)
 
     # Execute retrieval
-    if args.with_images:
+    if with_images:
         result = await pipeline.retrieve_with_images(
-            args.question, top_k=args.top_k, top_k_images=args.top_k_images
+            question, top_k=top_k, top_k_images=top_k_images
         )
     else:
-        result = await pipeline.retrieve(args.question, top_k=args.top_k)
+        result = await pipeline.retrieve(question, top_k=top_k)
 
-    print(f"Question: {args.question}")
+    print(f"Question: {question}")
 
     # Format match results
     match_rows = []

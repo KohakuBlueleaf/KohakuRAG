@@ -1,9 +1,14 @@
 """Validate WattBot predictions against the labeled train_QA.csv file.
 
 Enhanced validation with detailed error reporting and robust numerical comparison.
+
+Usage (CLI):
+    python scripts/wattbot_validate.py --pred artifacts/predictions.csv --verbose
+
+Usage (KohakuEngine):
+    kogine run scripts/wattbot_validate.py --config configs/validate_config.py
 """
 
-import argparse
 import ast
 import csv
 import json
@@ -15,6 +20,16 @@ BLANK_TOKEN = "is_blank"
 VALUE_WEIGHT = 0.75
 REF_WEIGHT = 0.15
 NA_WEIGHT = 0.10
+
+# ============================================================================
+# GLOBAL CONFIGURATION
+# These defaults can be overridden by KohakuEngine config injection or CLI args
+# ============================================================================
+
+truth = "data/train_QA.csv"
+pred = ""  # Required, no default
+show_errors = 0
+verbose = False
 
 
 @dataclass
@@ -348,36 +363,11 @@ def evaluate(
 
 def main() -> None:
     """Run validation and print summary stats."""
-    parser = argparse.ArgumentParser(
-        description="Validate WattBot predictions against train_QA.csv."
-    )
-    parser.add_argument(
-        "--truth",
-        type=Path,
-        default=Path("data/train_QA.csv"),
-        help="CSV containing the labeled WattBot answers.",
-    )
-    parser.add_argument(
-        "--pred",
-        type=Path,
-        required=True,
-        help="CSV containing model predictions (same schema as train_QA.csv).",
-    )
-    parser.add_argument(
-        "--show-errors",
-        type=int,
-        default=0,
-        help="Print the lowest-scoring N questions with detailed error info.",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Show detailed breakdown for ALL failed questions (not just lowest-scoring).",
-    )
-    args = parser.parse_args()
+    if not pred:
+        raise ValueError("pred must be set in config")
 
     # Evaluate predictions
-    scores, missing, extra = evaluate(args.truth, args.pred)
+    scores, missing, extra = evaluate(Path(truth), Path(pred))
 
     # Compute aggregate metrics
     total = len(scores)
@@ -416,13 +406,13 @@ def main() -> None:
     print(f"Failed answers:  {len(failed)}/{total} ({len(failed)/total*100:.1f}%)")
 
     # Show detailed error analysis
-    if args.show_errors > 0:
+    if show_errors > 0:
         print("\n" + "=" * 70)
-        print(f"Lowest-Scoring {args.show_errors} Questions (Detailed)")
+        print(f"Lowest-Scoring {show_errors} Questions (Detailed)")
         print("=" * 70)
 
         ranked = sorted(scores, key=lambda item: item.weighted)
-        for entry in ranked[: args.show_errors]:
+        for entry in ranked[:show_errors]:
             print(f"\n{'─' * 70}")
             print(f"ID: {entry.question_id} | Weighted Score: {entry.weighted:.3f}")
             print(f"Question: {entry.question_text}")
@@ -438,7 +428,7 @@ def main() -> None:
                 print(f"\nFailure Reason: {entry.failure_reason}")
 
     # Verbose mode: show ALL failed questions
-    if args.verbose and failed:
+    if verbose and failed:
         print("\n" + "=" * 70)
         print(f"All Failed Questions ({len(failed)} total)")
         print("=" * 70)
