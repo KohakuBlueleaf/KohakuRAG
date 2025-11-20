@@ -18,28 +18,28 @@ METADATA = "data/metadata.csv"
 MODELS = [
     {
         "model": "openai/gpt-oss-120b",
-        "output": "outputs/train-result-gpt-oss/single_preds1.csv",
+        "output": "artifacts/train-result-gpt-oss/single_preds1.csv",
     },
     {
         "model": "openai/gpt-oss-120b",
-        "output": "outputs/train-result-gpt-oss/single_preds2.csv",
+        "output": "artifacts/train-result-gpt-oss/single_preds2.csv",
     },
     {
         "model": "openai/gpt-oss-120b",
-        "output": "outputs/train-result-gpt-oss/single_preds3.csv",
+        "output": "artifacts/train-result-gpt-oss/single_preds3.csv",
     },
     {
         "model": "openai/gpt-oss-120b",
-        "output": "outputs/train-result-gpt-oss/single_preds4.csv",
+        "output": "artifacts/train-result-gpt-oss/single_preds4.csv",
     },
     {
         "model": "openai/gpt-oss-120b",
-        "output": "outputs/train-result-gpt-oss/single_preds5.csv",
+        "output": "artifacts/train-result-gpt-oss/single_preds5.csv",
     },
 ]
 
 # Aggregation settings
-AGGREGATED_OUTPUT = "outputs/train-result-gpt-oss/ensemble_preds.csv"
+AGGREGATED_OUTPUT = "artifacts/train-result-gpt-oss/ensemble_preds.csv"
 REF_MODE = "union"
 TIEBREAK = "first"
 
@@ -68,6 +68,11 @@ def create_answer_config(model_name: str, output_path: str) -> Config:
 
 
 if __name__ == "__main__":
+    import os
+
+    # Ensure output directory exists
+    os.makedirs("artifacts/train-result-gpt-oss", exist_ok=True)
+
     # Create answer scripts for each model
     answer_scripts = [
         Script(

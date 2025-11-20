@@ -1,37 +1,22 @@
-"""Image-enhanced answer configuration for WattBot.
-
-Usage:
-    kogine run scripts/wattbot_answer.py --config configs/with_images/answer.py
-"""
+"""Config for wattbot_answer.py (with-images path)"""
 
 from kohakuengine import Config
 
-# Database settings
 db = "artifacts/wattbot_with_images.db"
 table_prefix = "wattbot_img"
-
-# Input/output
 questions = "data/test_Q.csv"
 output = "artifacts/with_images_answers.csv"
-metadata = "data/metadata.csv"
-
-# Model settings
-model = "gpt-4o-mini"
-top_k = 6
+model = "openai/gpt-oss-120b"
+top_k = 16
 planner_model = None
 planner_max_queries = 3
-
-# Execution settings
-max_retries = 2
-max_concurrent = 10
-
-# Image settings (enabled)
-with_images = True
-top_k_images = 3  # Retrieve 3 additional images from image-only index
-
-# Debug settings
+metadata = "data/metadata.csv"
+max_retries = 3
+max_concurrent = -1
 single_run_debug = False
 question_id = None
+with_images = True
+top_k_images = 4
 
 
 def config_gen():
