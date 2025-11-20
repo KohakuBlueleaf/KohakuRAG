@@ -1,8 +1,10 @@
 temp/
 data/
+outputs/
 *venv/
 artifacts/
 .DS_Store
+.claude
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
