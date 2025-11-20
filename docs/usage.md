@@ -2,6 +2,80 @@
 
 All commands assume you've activated the local virtual environment (e.g., `source .venv/bin/activate`). The scripts live under `scripts/` and expect the repository root as the working directory.
 
+## Prerequisites: Install KohakuEngine
+
+All scripts use [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine) for configuration management. Install it first:
+
+```bash
+pip install kohakuengine
+```
+
+## Running Scripts with Configs
+
+All scripts are configured via Python config files. No command-line arguments are supported.
+
+```bash
+# Run any script with its config
+kogine run scripts/wattbot_answer.py --config configs/answer.py
+```
+
+## Available Config Files
+
+Example configs are provided in the `configs/` directory:
+
+### Common Configs (Root)
+
+| Config | Script | Description |
+|--------|--------|-------------|
+| `configs/fetch.py` | `wattbot_fetch_docs.py` | Download and parse PDFs |
+| `configs/validate.py` | `wattbot_validate.py` | Validate predictions |
+| `configs/aggregate.py` | `wattbot_aggregate.py` | Aggregate multiple results |
+| `configs/stats.py` | `wattbot_stats.py` | Print index statistics |
+| `configs/demo_query.py` | `wattbot_demo_query.py` | Test retrieval |
+| `configs/inspect_node.py` | `wattbot_inspect_node.py` | Inspect a node |
+| `configs/smoke.py` | `wattbot_smoke.py` | Smoke test |
+
+### Text-Only Path (`configs/text_only/`)
+
+| Config | Script | Description |
+|--------|--------|-------------|
+| `configs/text_only/index.py` | `wattbot_build_index.py` | Build text-only index |
+| `configs/text_only/answer.py` | `wattbot_answer.py` | Generate answers (no images) |
+
+### Image-Enhanced Path (`configs/with_images/`)
+
+| Config | Script | Description |
+|--------|--------|-------------|
+| `configs/with_images/caption.py` | `wattbot_add_image_captions.py` | Add image captions |
+| `configs/with_images/index.py` | `wattbot_build_index.py` | Build image-enhanced index |
+| `configs/with_images/image_index.py` | `wattbot_build_image_index.py` | Build image-only retrieval index |
+| `configs/with_images/answer.py` | `wattbot_answer.py` | Generate answers (with images) |
+
+### Workflows (`configs/workflows/`)
+
+Pre-built workflows that chain multiple scripts together:
+
+| Workflow | Description |
+|----------|-------------|
+| `configs/workflows/text_pipeline.py` | Full text-only pipeline: fetch → index → answer → validate |
+| `configs/workflows/with_image_pipeline.py` | Full image pipeline: fetch → caption → index → image_index → answer → validate |
+| `configs/workflows/ensemble_runner.py` | Run multiple models in parallel, then aggregate results with voting |
+
+**Running workflows:**
+
+```bash
+# Run text-only pipeline end-to-end
+python configs/workflows/text_pipeline.py
+
+# Run image-enhanced pipeline end-to-end
+python configs/workflows/with_image_pipeline.py
+
+# Run ensemble with multiple parallel models + aggregation
+python configs/workflows/ensemble_runner.py
+```
+
+Workflows use KohakuEngine's `Flow` API to orchestrate multiple scripts sequentially or in parallel.
+
 ## 🔀 Three Retrieval Modes
 
 KohakuRAG supports **three retrieval modes**:
@@ -38,8 +112,23 @@ All modes can coexist for A/B testing!
 ## 1a. Download and parse PDFs (Required for both paths)
 
 Convert every WattBot source PDF into a structured JSON payload:
+
+```python
+# configs/fetch.py
+from kohakuengine import Config
+
+metadata = "data/metadata.csv"
+pdf_dir = "artifacts/raw_pdfs"
+output_dir = "artifacts/docs"
+force_download = False
+limit = 10  # Set to 0 for all documents
+
+def config_gen():
+    return Config.from_globals()
+```
+
 ```bash
-python scripts/wattbot_fetch_docs.py --metadata data/metadata.csv --pdf-dir artifacts/raw_pdfs --output-dir artifacts/docs --limit 10  # Optional: test with 10 docs first
+kogine run scripts/wattbot_fetch_docs.py --config configs/fetch.py
 ```
 
 **What it does**:
@@ -48,7 +137,7 @@ python scripts/wattbot_fetch_docs.py --metadata data/metadata.csv --pdf-dir arti
 - Detects images and creates placeholder entries (not yet captioned)
 - Saves to `artifacts/docs/*.json`
 
-Use `--limit 5` during dry runs to fetch only a few documents, and add `--force-download` if you want to refresh already downloaded PDFs.
+Set `limit = 5` during dry runs to fetch only a few documents, and `force_download = True` if you want to refresh already downloaded PDFs.
 
 ---
 

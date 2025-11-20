@@ -58,6 +58,12 @@ While we demonstrate KohakuRAG with the WattBot 2025 dataset, **the core library
 - **Structured logging** for debugging and monitoring
 - **Validation scripts** for measuring accuracy before deployment
 
+### ⚙️ KohakuEngine Configuration
+- **Python-based configs** via [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine) — no YAML/JSON
+- **Reproducible experiments** with version-controlled configuration files
+- **Workflow orchestration** for chaining multiple scripts
+- **Parallel execution** for hyperparameter sweeps and model ensembles
+
 ---
 
 ## 🚀 Quick Start
@@ -543,6 +549,7 @@ Apache-2.0 — See [LICENSE](LICENSE) for details.
 ## 🙏 Acknowledgments
 
 - Built with [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) for vector storage
+- Configuration management via [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine)
 - Embeddings powered by [Jina AI](https://huggingface.co/jinaai/jina-embeddings-v3)
 - Developed for [Kaggle WattBot 2025](https://www.kaggle.com/competitions/wattbot-2025)
 
