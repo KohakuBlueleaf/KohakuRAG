@@ -11,36 +11,36 @@ from kohakuengine import Config, Script, Flow
 # Shared settings
 DB = "artifacts/wattbot_with_images.db"
 TABLE_PREFIX = "wattbot_img"
-QUESTIONS = "data/train_QA.csv"
+QUESTIONS = "data/test_Q.csv"
 METADATA = "data/metadata.csv"
 
 # Models to run in parallel
 MODELS = [
     {
         "model": "openai/GPT-5-mini",
-        "output": "outputs/train-result-gpt-mini/single_preds1.csv",
+        "output": "outputs/test-result-gpt-mini/single_preds1.csv",
     },
     {
         "model": "openai/GPT-5-mini",
-        "output": "outputs/train-result-gpt-mini/single_preds2.csv",
+        "output": "outputs/test-result-gpt-mini/single_preds2.csv",
     },
     {
         "model": "openai/GPT-5-mini",
-        "output": "outputs/train-result-gpt-mini/single_preds3.csv",
+        "output": "outputs/test-result-gpt-mini/single_preds3.csv",
     },
     {
         "model": "openai/GPT-5-mini",
-        "output": "outputs/train-result-gpt-mini/single_preds4.csv",
+        "output": "outputs/test-result-gpt-mini/single_preds4.csv",
     },
     {
         "model": "openai/GPT-5-mini",
-        "output": "outputs/train-result-gpt-mini/single_preds5.csv",
+        "output": "outputs/test-result-gpt-mini/single_preds5.csv",
     },
 ]
 
 # Aggregation settings
-AGGREGATED_OUTPUT = "outputs/train-result-gpt-mini/ensemble_preds.csv"
-REF_MODE = "union"
+AGGREGATED_OUTPUT = "outputs/test-result-gpt-mini/ensemble_preds.csv"
+REF_MODE = "intersection"
 TIEBREAK = "first"
 
 
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     import os
 
     # Ensure output directory exists
-    os.makedirs("outputs/train-result-gpt-mini", exist_ok=True)
+    os.makedirs("outputs/test-result-gpt-mini", exist_ok=True)
 
     # Create answer scripts for each model
     answer_scripts = [
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     print(f"Running {len(MODELS)} models in parallel...")
     print("=" * 60)
 
-    answer_flow = Flow(answer_scripts, mode="parallel", max_workers=len(MODELS))
+    answer_flow = Flow(answer_scripts)
     answer_flow.run()
 
     # Aggregate results
@@ -106,23 +106,6 @@ if __name__ == "__main__":
 
     aggregate_script = Script("scripts/wattbot_aggregate.py", config=aggregate_config)
     aggregate_script.run()
-
-    # Validate aggregated results
-    print("\n" + "=" * 60)
-    print("Validating ensemble results...")
-    print("=" * 60)
-
-    validate_config = Config(
-        globals_dict={
-            "truth": "data/train_QA.csv",
-            "pred": AGGREGATED_OUTPUT,
-            "show_errors": 0,
-            "verbose": True,
-        }
-    )
-
-    validate_script = Script("scripts/wattbot_validate.py", config=validate_config)
-    validate_script.run()
 
     print("\n" + "=" * 60)
     print("Ensemble complete!")

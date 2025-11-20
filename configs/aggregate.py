@@ -3,12 +3,10 @@
 from kohakuengine import Config
 
 inputs = [
-    "artifacts/results/model1.csv",
-    "artifacts/results/model2.csv",
-    "artifacts/results/model3.csv",
+    "outputs/train-result-gpt-mini/single_preds*.csv",
 ]
-output = "artifacts/aggregated_preds.csv"
-ref_mode = "union"  # or "intersection"
+output = "outputs/train-result-gpt-mini/ensemble_preds.csv"
+ref_mode = "intersection"  # or "intersection"
 tiebreak = "first"  # or "blank"
 
 
