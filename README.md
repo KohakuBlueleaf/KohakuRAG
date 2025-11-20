@@ -23,6 +23,7 @@ KohakuRAG is a **domain-agnostic Retrieval-Augmented Generation (RAG) framework*
 - **Single-file storage** using SQLite + [KohakuVault](https://github.com/KohakuBlueleaf/KohakuVault) — no external services required
 - **Rate-limit resilient** with automatic retry and exponential backoff for LLM APIs
 - **Production-tested** on Kaggle's WattBot 2025 competition (energy research corpus)
+- **Python-based configuration** via [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine) — no YAML/JSON, fully reproducible experiments
 
 While we demonstrate KohakuRAG with the WattBot 2025 dataset, **the core library is completely domain-agnostic** and can be applied to any document corpus.
 
@@ -81,6 +82,9 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -e .
+
+# Install KohakuEngine for configuration management
+pip install kohakuengine
 ```
 
 ### Basic Usage
@@ -119,31 +123,40 @@ async def main():
 asyncio.run(main())
 ```
 
-#### CLI Scripts
+#### Running Scripts with KohakuEngine
+
+All scripts are configured via Python config files using [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine). No command-line arguments needed.
 
 ```bash
 # 1. Prepare your documents (PDF/Markdown/Text)
 # Place them in a directory or use the WattBot example below
 
-# 2. Build the index
-python scripts/wattbot_build_index.py \
-    --metadata data/metadata.csv \
-    --docs-dir artifacts/docs \
-    --db artifacts/index.db
+# 2. Build the index (edit configs/text_only/index.py first)
+kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
 
-# 3. Query the index
-python scripts/wattbot_demo_query.py \
-    --db artifacts/index.db \
-    --question "Your question here"
+# 3. Query the index (edit configs/demo_query.py first)
+kogine run scripts/wattbot_demo_query.py --config configs/demo_query.py
 
-# 4. Generate answers with OpenAI
+# 4. Generate answers with OpenAI (edit configs/text_only/answer.py first)
 export OPENAI_API_KEY=your_key_here
-python scripts/wattbot_answer.py \
-    --db artifacts/index.db \
-    --questions data/questions.csv \
-    --output artifacts/answers.csv \
-    --model gpt-4o-mini \
-    --max-concurrent 10  # Control API rate (0 = unlimited)
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
+```
+
+**Example config file** (`configs/text_only/answer.py`):
+```python
+from kohakuengine import Config
+
+db = "artifacts/wattbot.db"
+table_prefix = "wattbot"
+questions = "data/test_Q.csv"
+output = "artifacts/answers.csv"
+model = "gpt-4o-mini"
+top_k = 6
+max_concurrent = 10  # Control API rate (0 = unlimited)
+max_retries = 2
+
+def config_gen():
+    return Config.from_globals()
 ```
 
 ### Rate Limit Handling & Async Concurrency
@@ -206,59 +219,52 @@ KohakuRAG was developed for the [Kaggle WattBot 2025 competition](https://www.ka
 
 ### Complete WattBot Workflow
 
+The easiest way to run the full pipeline is using the pre-built workflows:
+
+```bash
+# Text-only pipeline (fetch → index → answer → validate)
+python workflows/text_pipeline.py
+
+# Image-enhanced pipeline (fetch → caption → index → answer → validate)
+python workflows/with_image_pipeline.py
+
+# Ensemble with voting (multiple parallel runs → aggregate)
+python workflows/ensemble_runner.py
+```
+
+### Step-by-Step with Individual Configs
+
 ```bash
 # 1. Download and parse PDFs into structured JSON
-python scripts/wattbot_fetch_docs.py \
-    --metadata data/metadata.csv \
-    --pdf-dir artifacts/raw_pdfs \
-    --output-dir artifacts/docs \
-    --limit 10  # Optional: start with just 10 docs
+# Edit configs/fetch.py, then:
+kogine run scripts/wattbot_fetch_docs.py --config configs/fetch.py
 
 # 2. Build the hierarchical index
-python scripts/wattbot_build_index.py \
-    --metadata data/metadata.csv \
-    --docs-dir artifacts/docs \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot
+# Edit configs/text_only/index.py, then:
+kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
 
 # 3. Verify the index
-python scripts/wattbot_stats.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot
+# Edit configs/stats.py, then:
+kogine run scripts/wattbot_stats.py --config configs/stats.py
 
-python scripts/wattbot_demo_query.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot \
-    --question "How much water does GPT-3 training consume?"
+# Edit configs/demo_query.py, then:
+kogine run scripts/wattbot_demo_query.py --config configs/demo_query.py
 
 # 4. Generate answers for Kaggle submission
 export OPENAI_API_KEY=sk-...
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot.db \
-    --table-prefix wattbot \
-    --questions data/test_Q.csv \
-    --output artifacts/wattbot_answers.csv \
-    --model gpt-4o-mini \
-    --top-k 6 \
-    --max-retries 2 \
-    --max-concurrent 10
+# Edit configs/text_only/answer.py, then:
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
 
 # 5. Validate against training set (optional)
-python scripts/wattbot_answer.py \
-    --questions data/train_QA.csv \
-    --output artifacts/train_preds.csv \
-    --model gpt-4o-mini
-
-python scripts/wattbot_validate.py \
-    --pred artifacts/train_preds.csv \
-    --show-errors 5
+# Edit configs/validate.py, then:
+kogine run scripts/wattbot_validate.py --config configs/validate.py
 ```
 
-**Key Parameters:**
-- `--top-k`: Number of context snippets to retrieve per query
-- `--max-retries`: Extra attempts when model returns blank answers
-- `--planner-max-queries`: Total retrieval queries per question (original + LLM-generated)
-- `--max-concurrent`: Maximum concurrent API requests (default: 10, set to 0 for unlimited)
+**Key Config Parameters:**
+- `top_k`: Number of context snippets to retrieve per query
+- `max_retries`: Extra attempts when model returns blank answers
+- `planner_max_queries`: Total retrieval queries per question (original + LLM-generated)
+- `max_concurrent`: Maximum concurrent API requests (default: 10, set to 0 for unlimited)
   - Controls OpenAI API rate limiting via semaphore
   - All scripts use `asyncio.gather()` for efficient concurrent processing
 
@@ -291,14 +297,26 @@ export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
 
 #### 2. Generate Image Captions
 
+Edit `configs/with_images/caption.py` with your settings:
+
+```python
+from kohakuengine import Config
+
+docs_dir = "artifacts/docs"
+pdf_dir = "artifacts/raw_pdfs"
+output_dir = "artifacts/docs_with_images"
+db = "artifacts/wattbot_with_images.db"
+vision_model = "qwen/qwen3-vl-235b-a22b-instruct"
+max_concurrent = 5
+limit = 10  # Test with 10 documents first
+
+def config_gen():
+    return Config.from_globals()
+```
+
+Then run:
 ```bash
-python scripts/wattbot_add_image_captions.py \
-    --docs-dir artifacts/docs \
-    --pdf-dir artifacts/raw_pdfs \
-    --output-dir artifacts/docs_with_images \
-    --db artifacts/wattbot_with_images.db \
-    --vision-model qwen/qwen3-vl-235b-a22b-instruct \
-    --limit 10  # Test with 10 documents first
+kogine run scripts/wattbot_add_image_captions.py --config configs/with_images/caption.py
 ```
 
 **What it does** (3-phase parallel processing):
@@ -312,40 +330,28 @@ python scripts/wattbot_add_image_captions.py \
 
 ```bash
 # Text-only index (baseline)
-python scripts/wattbot_build_index.py \
-    --docs-dir artifacts/docs \
-    --db artifacts/wattbot_text_only.db
+kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
 
 # Image-enhanced index
-python scripts/wattbot_build_index.py \
-    --docs-dir artifacts/docs_with_images \
-    --db artifacts/wattbot_with_images.db
+kogine run scripts/wattbot_build_index.py --config configs/with_images/index.py
 ```
 
 #### 4. Compare Performance
 
 ```bash
 # Query with text-only
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot_text_only.db \
-    --questions data/test_Q.csv \
-    --output artifacts/text_only_answers.csv
+kogine run scripts/wattbot_answer.py --config configs/text_only/answer.py
 
-# Query with images
-python scripts/wattbot_answer.py \
-    --db artifacts/wattbot_with_images.db \
-    --questions data/test_Q.csv \
-    --output artifacts/with_images_answers.csv \
-    --with-images  # Enable image-aware retrieval
+# Query with images (set with_images=True in config)
+kogine run scripts/wattbot_answer.py --config configs/with_images/answer.py
 
 # Validate both
-python scripts/wattbot_validate.py --pred artifacts/text_only_answers.csv
-python scripts/wattbot_validate.py --pred artifacts/with_images_answers.csv
+kogine run scripts/wattbot_validate.py --config configs/validate.py
 ```
 
 ### Image Format in Prompts
 
-When `--with-images` is enabled, retrieved context includes a separate "Referenced media" section:
+When `with_images=True` is enabled in config, retrieved context includes a separate "Referenced media" section:
 
 ```
 Context snippets:
@@ -431,8 +437,9 @@ For detailed architecture documentation, see [`docs/architecture.md`](docs/archi
 ## 📚 Documentation
 
 - **[Architecture Guide](docs/architecture.md)** — Detailed design decisions and component interactions
-- **[Usage Guide](docs/usage.md)** — Complete workflow examples and CLI reference
+- **[Usage Guide](docs/usage.md)** — Complete workflow examples and config reference
 - **[WattBot Playbook](docs/wattbot.md)** — Competition-specific setup and validation
+- **[API Reference](docs/api_reference.md)** — Detailed API documentation for all components
 
 ---
 
@@ -440,7 +447,7 @@ For detailed architecture documentation, see [`docs/architecture.md`](docs/archi
 
 ### Requirements
 - Python 3.10+ (uses modern type hints: `list[str]`, `dict[str, Any]`)
-- Dependencies: `torch`, `transformers`, `kohakuvault`, `pypdf`, `httpx`, `openai`
+- Dependencies: `torch`, `transformers`, `kohakuvault`, `pypdf`, `httpx`, `openai`, `kohakuengine`
 - Jina embeddings (~2GB) downloaded on first run — set `HF_HOME` for custom cache location
 - All core operations use async/await for efficient I/O
 
@@ -468,6 +475,10 @@ KohakuRAG/
 │   ├── wattbot_build_index.py
 │   ├── wattbot_answer.py
 │   └── ...
+├── configs/                # KohakuEngine configuration files
+│   ├── text_only/          # Text-only pipeline configs
+│   └── with_images/        # Image-enhanced configs
+├── workflows/              # Multi-script workflow runners
 ├── docs/                   # Documentation
 │   ├── architecture.md
 │   ├── usage.md
@@ -490,24 +501,15 @@ KohakuRAG/
 **Problem:** `openai.RateLimitError: Rate limit reached for gpt-4o-mini`
 
 **Solution:** The retry mechanism handles this automatically. If you still see errors:
-1. Reduce `max_concurrent` parameter in `OpenAIChatModel` constructor (default: 10)
-2. Increase `max_retries` in `OpenAIChatModel` constructor (default: 5)
+1. Reduce `max_concurrent` parameter in your config (default: 10)
+2. Increase `max_retries` in your config (default: 5)
 3. Consider using a higher-tier OpenAI plan for increased TPM limits
 
-Example:
+Example config:
 ```python
-# Reduce concurrency to avoid rate limits
-chat = OpenAIChatModel(
-    model="gpt-4o-mini",
-    max_concurrent=5,  # Reduce concurrent requests
-    max_retries=10     # More retry attempts
-)
-
-# Or disable rate limiting entirely (use with caution)
-chat = OpenAIChatModel(
-    model="gpt-4o-mini",
-    max_concurrent=0   # Unlimited concurrency
-)
+# configs/text_only/answer.py
+max_concurrent = 5   # Reduce concurrent requests
+max_retries = 10     # More retry attempts
 ```
 
 ### Embedding Model Download Issues
@@ -517,7 +519,7 @@ chat = OpenAIChatModel(
 ```bash
 # Set custom Hugging Face cache
 export HF_HOME=/path/to/large/disk
-python scripts/wattbot_build_index.py ...
+kogine run scripts/wattbot_build_index.py --config configs/text_only/index.py
 ```
 
 ### Out of Memory
