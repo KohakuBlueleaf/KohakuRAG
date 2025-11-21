@@ -946,9 +946,16 @@ if __name__ == "__main__":
         Script("scripts/wattbot_answer.py", config=answer_config),
     ]
 
-    flow = Flow(scripts, mode="sequential")
+    # Use use_subprocess=True for scripts that use asyncio to avoid event loop errors
+    flow = Flow(scripts, mode="sequential", use_subprocess=True)
     flow.run()
 ```
+
+**Important notes:**
+
+- **Use `use_subprocess=True` for asyncio scripts**: KohakuRAG scripts use `asyncio`. When running them via `Flow` or `Script.run()`, set `use_subprocess=True` to avoid "event loop is closed" errors. This runs each script in a separate Python process.
+
+- **`max_workers` controls parallelism**: When using `mode="parallel"`, the `max_workers` parameter limits concurrent subprocess execution. Defaults to CPU count if not specified.
 
 ### Ensemble/Voting Workflow
 

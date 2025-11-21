@@ -62,8 +62,8 @@ While we demonstrate KohakuRAG with the WattBot 2025 dataset, **the core library
 ### ⚙️ KohakuEngine Configuration
 - **Python-based configs** via [KohakuEngine](https://github.com/KohakuBlueleaf/KohakuEngine) — no YAML/JSON
 - **Reproducible experiments** with version-controlled configuration files
-- **Workflow orchestration** for chaining multiple scripts
-- **Parallel execution** for hyperparameter sweeps and model ensembles
+- **Workflow orchestration** for chaining multiple scripts (use `use_subprocess=True` for asyncio scripts)
+- **Parallel execution** with `max_workers` control for hyperparameter sweeps and model ensembles
 
 ---
 
