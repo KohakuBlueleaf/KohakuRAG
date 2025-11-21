@@ -3,9 +3,9 @@
 from kohakuengine import Config
 
 inputs = [
-    "outputs/train-result-gpt-mini/single_preds*.csv",
+    "artifacts/results/*.csv",
 ]
-output = "outputs/train-result-gpt-mini/ensemble_preds.csv"
+output = "outputs/test.csv"
 ref_mode = "intersection"  # or "intersection"
 tiebreak = "first"  # or "blank"
 

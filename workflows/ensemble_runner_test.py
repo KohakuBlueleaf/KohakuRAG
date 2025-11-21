@@ -6,7 +6,9 @@ Usage:
     python configs/workflows/ensemble_runner.py
 """
 
-from kohakuengine import Config, Script, Flow
+from typing import Any
+from pathlib import Path
+from kohakuengine import Config, Script, Flow, capture_globals
 
 # Shared settings
 DB = "artifacts/wattbot_with_images.db"
@@ -14,70 +16,57 @@ TABLE_PREFIX = "wattbot_img"
 QUESTIONS = "data/test_Q.csv"
 METADATA = "data/metadata.csv"
 
+MODEL = "openai/GPT-5-mini"
+OUTPUT_DIR = Path("outputs/test-result-gpt-mini")
+NUM_RUNS = 5
+
 # Models to run in parallel
 MODELS = [
     {
-        "model": "openai/GPT-5-mini",
-        "output": "outputs/test-result-gpt-mini/single_preds1.csv",
-    },
-    {
-        "model": "openai/GPT-5-mini",
-        "output": "outputs/test-result-gpt-mini/single_preds2.csv",
-    },
-    {
-        "model": "openai/GPT-5-mini",
-        "output": "outputs/test-result-gpt-mini/single_preds3.csv",
-    },
-    {
-        "model": "openai/GPT-5-mini",
-        "output": "outputs/test-result-gpt-mini/single_preds4.csv",
-    },
-    {
-        "model": "openai/GPT-5-mini",
-        "output": "outputs/test-result-gpt-mini/single_preds5.csv",
-    },
+        "model": MODEL,
+        "output": (OUTPUT_DIR / f"single_preds{i}.csv").as_posix(),
+    }
+    for i in range(NUM_RUNS)
 ]
 
 # Aggregation settings
-AGGREGATED_OUTPUT = "outputs/test-result-gpt-mini/ensemble_preds.csv"
+AGGREGATED_OUTPUT = (OUTPUT_DIR / "ensemble_preds.csv").as_posix()
 REF_MODE = "intersection"
 TIEBREAK = "first"
 
+# Base config
+with capture_globals() as ctx:
+    db = DB
+    table_prefix = TABLE_PREFIX
+    questions = QUESTIONS
+    metadata = METADATA
+    planner_model = None
+    planner_max_queries = 3
+    top_k = 16
+    max_retries = 3
+    max_concurrent = -1
+    with_images = True
+    top_k_images = 2
+    questions_id = None
+    single_run_debug = False
 
-def create_answer_config(model_name: str, output_path: str) -> Config:
+
+def create_answer_config(cfg: dict[str, Any]) -> Config:
     """Create answer config for a specific model."""
-    return Config(
-        globals_dict={
-            "db": DB,
-            "table_prefix": TABLE_PREFIX,
-            "questions": QUESTIONS,
-            "output": output_path,
-            "metadata": METADATA,
-            "model": model_name,
-            "planner_model": None,
-            "top_k": 16,
-            "planner_max_queries": 3,
-            "max_retries": 3,
-            "max_concurrent": -1,
-            "with_images": True,
-            "top_k_images": 4,
-            "single_run_debug": False,
-            "question_id": None,
-        }
-    )
+    base_config = Config.from_context(ctx)
+    base_config.globals_dict.update(cfg)
+    return base_config
 
 
 if __name__ == "__main__":
-    import os
-
     # Ensure output directory exists
-    os.makedirs("outputs/test-result-gpt-mini", exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Create answer scripts for each model
     answer_scripts = [
         Script(
             "scripts/wattbot_answer.py",
-            config=create_answer_config(cfg["model"], cfg["output"]),
+            config=create_answer_config(cfg),
         )
         for cfg in MODELS
     ]
@@ -87,7 +76,7 @@ if __name__ == "__main__":
     print(f"Running {len(MODELS)} models in parallel...")
     print("=" * 60)
 
-    answer_flow = Flow(answer_scripts)
+    answer_flow = Flow(answer_scripts, use_subprocess=True)
     answer_flow.run()
 
     # Aggregate results
