@@ -452,7 +452,7 @@ def create_pipeline() -> RAGPipeline:
         deduplicate_retrieval=deduplicate_retrieval,
         rerank_strategy=rerank_strategy,
         top_k_final=top_k_final,
-        db_path=str(db),  # For ImageStore when send_images_to_llm=True
+        db_path=str(db),
     )
 
     return pipeline
@@ -519,7 +519,6 @@ async def _answer_single_row(
                 with_images=with_images,
                 top_k_images=top_k_images,
                 top_k_final=current_top_k_final,
-                send_images_to_llm=send_images_to_llm,
             )
             structured = qa_result.answer
             is_blank = (
@@ -668,7 +667,6 @@ async def run_single_question_debug(
             top_k=current_top_k,
             with_images=with_images,
             top_k_images=top_k_images,
-            send_images_to_llm=send_images_to_llm,
         )
         structured = qa_result.answer
         is_blank = (
