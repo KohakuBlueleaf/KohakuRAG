@@ -404,33 +404,6 @@ def load_questions(path: Path) -> tuple[list[Row], list[str]]:
 
 
 @dataclass(frozen=True)
-class AppConfig:
-    """Immutable config for the application."""
-
-    db: Path
-    table_prefix: str
-    model: str
-    top_k: int
-    planner_model: str
-    planner_max_queries: int
-    metadata: Mapping[str, Mapping[str, str]]
-    max_retries: int
-    max_concurrent: int
-    with_images: bool = False
-    top_k_images: int = 0
-    deduplicate_retrieval: bool = False
-    rerank_strategy: str | None = None
-    top_k_final: int | None = None
-    llm_provider: str = "openrouter"
-    openrouter_api_key: str | None = None
-    site_url: str | None = None
-    app_name: str | None = None
-    embedding_model: str = "jina"
-    embedding_dim: int | None = None
-    embedding_task: str = "retrieval"
-
-
-@dataclass(frozen=True)
 class AnswerResult:
     """Result from answering a single question."""
 
@@ -439,12 +412,24 @@ class AnswerResult:
     message: str
 
 
-def create_pipeline(config: AppConfig) -> RAGPipeline:
-    """Create a shared RAG pipeline for all async tasks."""
+def create_pipeline() -> RAGPipeline:
+    """Create a shared RAG pipeline using global config variables."""
+    from types import SimpleNamespace
+
+    # Create config object from globals for factory functions
+    config = SimpleNamespace(
+        llm_provider=llm_provider,
+        model=model,
+        openrouter_api_key=openrouter_api_key,
+        site_url=site_url,
+        app_name=app_name,
+        max_concurrent=max_concurrent,
+    )
+
     # Datastore (thread-safe via async executor)
     store = KVaultNodeStore(
-        config.db,
-        table_prefix=config.table_prefix,
+        Path(db),
+        table_prefix=table_prefix,
         dimensions=None,
     )
 
@@ -452,7 +437,7 @@ def create_pipeline(config: AppConfig) -> RAGPipeline:
     planner_chat = create_chat_model(config, PLANNER_SYSTEM_PROMPT)
     planner = LLMQueryPlanner(
         chat=planner_chat,
-        max_queries=config.planner_max_queries,
+        max_queries=planner_max_queries,
     )
 
     # Answer LLM (generates final structured answers)
@@ -464,9 +449,10 @@ def create_pipeline(config: AppConfig) -> RAGPipeline:
         embedder=GLOBAL_EMBEDDER,  # Shared embedder
         chat_model=chat,
         planner=planner,
-        deduplicate_retrieval=config.deduplicate_retrieval,
-        rerank_strategy=config.rerank_strategy,
-        top_k_final=config.top_k_final,
+        deduplicate_retrieval=deduplicate_retrieval,
+        rerank_strategy=rerank_strategy,
+        top_k_final=top_k_final,
+        db_path=str(db),  # For ImageStore when send_images_to_llm=True
     )
 
     return pipeline
@@ -481,7 +467,7 @@ async def _answer_single_row(
     idx: int,
     row: Row,
     columns: Sequence[str],
-    config: AppConfig,
+    metadata_records: Mapping[str, Mapping[str, str]],
     pipeline: RAGPipeline,
     retry_count: int | None = None,
     override_top_k: int | None = None,
@@ -508,20 +494,20 @@ async def _answer_single_row(
     }
 
     # Determine retry behavior
-    max_retries = 0 if retry_count == 0 else (retry_count or config.max_retries)
-    base_top_k = override_top_k or config.top_k
+    max_retries_count = 0 if retry_count == 0 else (retry_count or max_retries)
+    base_top_k = override_top_k or top_k
 
     # Retry loop: increase context window each iteration if answer is blank
     qa_result = None
     structured = None
 
-    for attempt in range(max_retries + 1):
+    for attempt in range(max_retries_count + 1):
         current_top_k = base_top_k * (attempt + 1)
 
         # Also multiply top_k_final by attempt count if configured
         current_top_k_final = None
-        if config.top_k_final is not None:
-            current_top_k_final = config.top_k_final * (attempt + 1)
+        if top_k_final is not None:
+            current_top_k_final = top_k_final * (attempt + 1)
 
         try:
             qa_result = await pipeline.run_qa(
@@ -530,9 +516,10 @@ async def _answer_single_row(
                 user_template=USER_PROMPT_TEMPLATE,
                 additional_info=additional_info,
                 top_k=current_top_k,
-                with_images=config.with_images,
-                top_k_images=config.top_k_images,
+                with_images=with_images,
+                top_k_images=top_k_images,
                 top_k_final=current_top_k_final,
+                send_images_to_llm=send_images_to_llm,
             )
             structured = qa_result.answer
             is_blank = (
@@ -552,7 +539,7 @@ async def _answer_single_row(
                     idx,
                     row,
                     columns,
-                    config,
+                    metadata_records,
                     pipeline,
                     retry_count=0,
                     override_top_k=reduced_top_k,
@@ -565,7 +552,7 @@ async def _answer_single_row(
                 idx,
                 row,
                 columns,
-                config,
+                metadata_records,
                 pipeline,
                 retry_count=0,
                 override_top_k=reduced_top_k,
@@ -607,7 +594,7 @@ async def _answer_single_row(
             result["ref_id"] = BLANK_TOKEN
 
         # Resolve URLs and citations from metadata
-        ref_url, supporting = build_ref_details(structured.ref_id, config.metadata)
+        ref_url, supporting = build_ref_details(structured.ref_id, metadata_records)
         result["ref_url"] = ref_url
         result["supporting_materials"] = supporting
         result["explanation"] = structured.explanation or BLANK_TOKEN
@@ -626,13 +613,15 @@ async def _answer_single_row(
 async def answer_questions(
     rows: Sequence[Row],
     columns: Sequence[str],
-    config: AppConfig,
+    metadata_records: Mapping[str, Mapping[str, str]],
     pipeline: RAGPipeline,
 ):
     """Process all questions concurrently, yielding results as they complete."""
     # Create async tasks for all questions
     tasks = [
-        asyncio.create_task(_answer_single_row(idx, row, columns, config, pipeline))
+        asyncio.create_task(
+            _answer_single_row(idx, row, columns, metadata_records, pipeline)
+        )
         for idx, row in enumerate(rows)
     ]
 
@@ -651,7 +640,7 @@ async def answer_questions(
 async def run_single_question_debug(
     first_row: Row,
     columns: Sequence[str],
-    config: AppConfig,
+    metadata_records: Mapping[str, Mapping[str, str]],
     pipeline: RAGPipeline,
     writer: csv.DictWriter,
     f_out,
@@ -669,16 +658,17 @@ async def run_single_question_debug(
     is_blank = True
 
     # Retry with increasing context window
-    for attempt in range(config.max_retries + 1):
-        current_top_k = config.top_k * (attempt + 1)
+    for attempt in range(max_retries + 1):
+        current_top_k = top_k * (attempt + 1)
         qa_result = await pipeline.run_qa(
             question,
             system_prompt=ANSWER_SYSTEM_PROMPT,
             user_template=USER_PROMPT_TEMPLATE,
             additional_info=additional_info,
             top_k=current_top_k,
-            with_images=config.with_images,
-            top_k_images=config.top_k_images,
+            with_images=with_images,
+            top_k_images=top_k_images,
+            send_images_to_llm=send_images_to_llm,
         )
         structured = qa_result.answer
         is_blank = (
@@ -725,7 +715,7 @@ async def run_single_question_debug(
             result_row["ref_id"] = f"[{joined_ids}]"
         else:
             result_row["ref_id"] = BLANK_TOKEN
-        ref_url, supporting = build_ref_details(structured.ref_id, config.metadata)
+        ref_url, supporting = build_ref_details(structured.ref_id, metadata_records)
         result_row["ref_url"] = ref_url
         result_row["supporting_materials"] = supporting
         result_row["explanation"] = structured.explanation or BLANK_TOKEN
@@ -757,13 +747,13 @@ async def run_single_question_debug(
 async def run_all_questions(
     rows: Sequence[Row],
     columns: Sequence[str],
-    config: AppConfig,
+    metadata_records: Mapping[str, Mapping[str, str]],
     pipeline: RAGPipeline,
     writer: csv.DictWriter,
     f_out,
 ) -> None:
     """Process all questions and write results as they complete."""
-    async for answer in answer_questions(rows, columns, config, pipeline):
+    async for answer in answer_questions(rows, columns, metadata_records, pipeline):
         writer.writerow(answer.row)
         f_out.flush()
 
@@ -782,23 +772,8 @@ async def main() -> None:
     rows, columns = load_questions(Path(questions))
     metadata_records = load_metadata_records(Path(metadata))
 
-    # Build immutable config
-    config = AppConfig(
-        db=Path(db),
-        table_prefix=table_prefix,
-        model=model,
-        top_k=top_k,
-        planner_model=planner_model or model,
-        planner_max_queries=planner_max_queries,
-        metadata=metadata_records,
-        max_retries=max(0, max_retries),
-        max_concurrent=max_concurrent,
-        with_images=with_images,
-        top_k_images=top_k_images,
-    )
-
-    # Create shared pipeline
-    pipeline = create_pipeline(config)
+    # Create shared pipeline (uses global config variables)
+    pipeline = create_pipeline()
 
     with output_path.open("w", newline="", encoding="utf-8") as f_out:
         writer = csv.DictWriter(f_out, fieldnames=list(columns))
@@ -825,12 +800,14 @@ async def main() -> None:
                 first_row = rows[0]
 
             await run_single_question_debug(
-                first_row, columns, config, pipeline, writer, f_out
+                first_row, columns, metadata_records, pipeline, writer, f_out
             )
 
         # STANDARD MODE: Process all questions concurrently, streaming results
         else:
-            await run_all_questions(rows, columns, config, pipeline, writer, f_out)
+            await run_all_questions(
+                rows, columns, metadata_records, pipeline, writer, f_out
+            )
 
 
 def entry_point():
