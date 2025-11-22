@@ -323,6 +323,8 @@ class JinaV4EmbeddingModel:
         # Convert to numpy
         if isinstance(embeddings, torch.Tensor):
             arr = embeddings.detach().float().cpu().numpy()
+        elif isinstance(embeddings, list):
+            arr = torch.stack(embeddings).detach().float().cpu().numpy()
         else:
             arr = np.asarray(embeddings)
 
