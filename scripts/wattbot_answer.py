@@ -452,7 +452,6 @@ def create_pipeline() -> RAGPipeline:
         deduplicate_retrieval=deduplicate_retrieval,
         rerank_strategy=rerank_strategy,
         top_k_final=top_k_final,
-        db_path=str(db),
     )
 
     return pipeline
