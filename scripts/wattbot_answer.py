@@ -278,25 +278,10 @@ def create_chat_model(config, system_prompt: str):
 
 # ============================================================================
 # GLOBAL SHARED EMBEDDER
-# Pre-load the Jina model once and share across concurrent tasks
+# Created in main() after config injection
 # ============================================================================
 
-
-def _create_global_embedder():
-    """Create global embedder using module-level config."""
-    # Create a SimpleNamespace from globals to mimic config object
-    from types import SimpleNamespace
-
-    config = SimpleNamespace(
-        embedding_model=embedding_model,
-        embedding_dim=embedding_dim,
-        embedding_task=embedding_task,
-    )
-    return create_embedder(config)
-
-
-# Create a single shared embedder (thread-safe via async executor)
-GLOBAL_EMBEDDER = _create_global_embedder()
+GLOBAL_EMBEDDER = None  # Will be set in main()
 
 
 # ============================================================================
@@ -414,8 +399,6 @@ class AnswerResult:
 
 def create_pipeline() -> RAGPipeline:
     """Create a shared RAG pipeline using global config variables."""
-    from types import SimpleNamespace
-
     # Create config object from globals for factory functions
     config = SimpleNamespace(
         llm_provider=llm_provider,
@@ -762,8 +745,18 @@ async def run_all_questions(
 
 async def main() -> None:
     """Main entry point: load data, create pipeline, process questions."""
+    global GLOBAL_EMBEDDER
+
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create embedder using injected config values
+    embedder_config = SimpleNamespace(
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        embedding_task=embedding_task,
+    )
+    GLOBAL_EMBEDDER = create_embedder(embedder_config)
 
     # Load input data
     rows, columns = load_questions(Path(questions))
