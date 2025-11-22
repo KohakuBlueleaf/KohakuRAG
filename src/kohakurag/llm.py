@@ -9,6 +9,13 @@ from pathlib import Path
 
 from openai import AsyncOpenAI, RateLimitError
 
+try:
+    from openrouter import OpenRouter
+
+    OPENROUTER_AVAILABLE = True
+except ImportError:
+    OPENROUTER_AVAILABLE = False
+
 from .pipeline import ChatModel
 
 
@@ -222,10 +229,8 @@ class OpenRouterChatModel(ChatModel):
             base_retry_delay: Base delay for exponential backoff (seconds)
             max_concurrent: Maximum concurrent requests (0 = unlimited)
         """
-        # Import here to avoid requiring openrouter for users who don't use it
-        try:
-            from openrouter import OpenRouter
-        except ImportError:
+        # Check if OpenRouter SDK is available
+        if not OPENROUTER_AVAILABLE:
             raise ImportError(
                 "openrouter package is required for OpenRouterChatModel. "
                 "Install with: pip install openrouter"
@@ -242,8 +247,8 @@ class OpenRouterChatModel(ChatModel):
                 "OPENROUTER_API_KEY is required. Set via env variable or pass as api_key parameter."
             )
 
-        # Create OpenRouter client
-        self._client = OpenRouter(api_key=key)
+        # Store API key for creating clients in context managers
+        self._api_key = key
         self._model = model
         self._system_prompt = system_prompt
         self._site_url = site_url or "https://github.com/KohakuBlueleaf/KohakuRAG"
@@ -337,16 +342,17 @@ class OpenRouterChatModel(ChatModel):
         Returns:
             Response text from the model
         """
-        # Use OpenRouter SDK's async method
-        response = await self._client.chat.send_async(
-            messages=messages,
-            model=self._model,
-            stream=False,
-        )
+        # Use OpenRouter SDK with context manager (required for proper auth)
+        async with OpenRouter(api_key=self._api_key) as client:
+            response = await client.chat.send_async(
+                messages=messages,
+                model=self._model,
+                stream=False,
+            )
 
-        # Extract response text
-        if hasattr(response, "choices") and response.choices:
-            return response.choices[0].message.content or ""
-        else:
-            # Fallback for unexpected response format
-            return str(response)
+            # Extract response text
+            if hasattr(response, "choices") and response.choices:
+                return response.choices[0].message.content or ""
+            else:
+                # Fallback for unexpected response format
+                return str(response)
