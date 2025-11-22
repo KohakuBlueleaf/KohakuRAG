@@ -26,6 +26,7 @@ from kohakuvault import VectorKVault
 
 from kohakurag import NodeKind
 from kohakurag.datastore import KVaultNodeStore
+from kohakurag.embeddings import JinaEmbeddingModel, JinaV4EmbeddingModel
 
 # ============================================================================
 # GLOBAL CONFIGURATION
@@ -35,6 +36,12 @@ from kohakurag.datastore import KVaultNodeStore
 db = "artifacts/wattbot_with_images.db"
 table_prefix = "wattbot_img"
 image_table = None  # Default: {prefix}_images_vec
+
+# Embedding settings (for direct image embedding with JinaV4)
+embedding_model = "jina"  # Options: "jina" (use captions), "jinav4" (direct embedding)
+embedding_dim = None  # For JinaV4: 128, 256, 512, 1024, 2048
+embedding_task = "retrieval"  # For JinaV4
+embed_images_directly = False  # True = use JinaV4.encode_image(), False = use captions
 
 
 async def main() -> None:
@@ -102,14 +109,66 @@ async def main() -> None:
         print("  2. Ran wattbot_build_index.py on docs_with_images/")
         sys.exit(0)
 
+    # Determine embedding strategy
+    use_direct_embedding = embed_images_directly and embedding_model == "jinav4"
+
+    if use_direct_embedding:
+        print("\n🎨 Using JinaV4 direct image embedding...")
+        print(f"   Dimension: {embedding_dim or 1024}")
+        print(f"   Task: {embedding_task}")
+
+        # Create JinaV4 embedder
+        embedder = JinaV4EmbeddingModel(
+            truncate_dim=embedding_dim or 1024,
+            task=embedding_task,
+        )
+
+        # Extract image bytes from nodes
+        image_bytes_list = []
+        valid_nodes = []
+
+        for node in image_nodes:
+            img_data = node.metadata.get("image_data")
+            if img_data:
+                image_bytes_list.append(img_data)
+                valid_nodes.append(node)
+            else:
+                print(f"  ⚠️  No image_data in {node.node_id}, skipping")
+
+        if not valid_nodes:
+            print("\n⚠️  No image nodes with image_data found!")
+            sys.exit(0)
+
+        print(f"✓ Loaded {len(valid_nodes)} images with binary data")
+
+        # Embed images directly using JinaV4
+        print(f"\nEmbedding {len(image_bytes_list)} images with JinaV4...")
+        embeddings = await embedder.embed_images(image_bytes_list)
+        print(f"✓ Generated embeddings: shape={embeddings.shape}")
+
+        # Use JinaV4 dimensions for image table
+        actual_dimensions = embedder.dimension
+        image_nodes_to_index = valid_nodes
+
+        # Assign new embeddings to nodes (for insertion)
+        for i, node in enumerate(valid_nodes):
+            node.embedding = embeddings[i]
+
+    else:
+        print("\n📝 Using caption-based embeddings (from text index)...")
+        actual_dimensions = store.dimensions
+        embeddings = np.vstack([node.embedding for node in image_nodes])
+        image_nodes_to_index = image_nodes
+
     # Create image-only vector table
     print(f"\nCreating image-only vector table: {actual_image_table}")
+    print(f"Dimensions: {actual_dimensions}")
 
     try:
         image_vec_store = VectorKVault(
             str(db_path),
             table=actual_image_table,
-            dimensions=store.dimensions,
+            dimensions=actual_dimensions,
             metric="cosine",
         )
         image_vec_store.enable_auto_pack()
@@ -118,10 +177,10 @@ async def main() -> None:
         sys.exit(1)
 
     # Insert image embeddings
-    print(f"Inserting {len(image_nodes)} image embeddings...")
+    print(f"Inserting {len(image_nodes_to_index)} image embeddings...")
 
     inserted = 0
-    for node in image_nodes:
+    for node in image_nodes_to_index:
         try:
             image_vec_store.insert(
                 node.embedding.astype(np.float32),
@@ -131,7 +190,7 @@ async def main() -> None:
         except Exception as e:
             print(f"  ⚠️  Failed to insert {node.node_id}: {e}")
 
-    print(f"✓ Inserted {inserted}/{len(image_nodes)} image embeddings")
+    print(f"✓ Inserted {inserted}/{len(image_nodes_to_index)} image embeddings")
 
     # Summary
     print("\n" + "=" * 60)
@@ -139,6 +198,11 @@ async def main() -> None:
     print("=" * 60)
     print(f"Image embeddings: {inserted}")
     print(f"Table: {actual_image_table}")
+    print(f"Dimensions: {actual_dimensions}")
+    if use_direct_embedding:
+        print(f"Method: JinaV4 direct image embedding ✨")
+    else:
+        print(f"Method: Caption-based (JinaV3 or existing)")
     print("\nNow you can use --top-k-images flag with wattbot_answer.py")
     print("=" * 60)
 

@@ -19,6 +19,7 @@ from kohakurag import (
     text_to_payload,
 )
 from kohakurag.datastore import KVaultNodeStore
+from kohakurag.embeddings import JinaEmbeddingModel, JinaV4EmbeddingModel
 
 # ============================================================================
 # GLOBAL CONFIGURATION
@@ -30,6 +31,11 @@ docs_dir = "artifacts/docs"
 db = "artifacts/wattbot.db"
 table_prefix = "wattbot"
 use_citations = False
+
+# Embedding settings
+embedding_model = "jina"  # Options: "jina" (v3), "jinav4"
+embedding_dim = None  # For JinaV4: 128, 256, 512, 1024, 2048
+embedding_task = "retrieval"  # For JinaV4: "retrieval", "text-matching", "code"
 
 
 def load_metadata(path: Path) -> dict[str, dict[str, str]]:
@@ -81,6 +87,24 @@ def iter_documents(
 
 
 # ============================================================================
+# EMBEDDER FACTORY
+# ============================================================================
+
+
+def create_embedder():
+    """Create embedder based on module-level config."""
+    if embedding_model == "jinav4":
+        print(f"Using JinaV4 embeddings (dim={embedding_dim}, task={embedding_task})")
+        return JinaV4EmbeddingModel(
+            truncate_dim=embedding_dim or 1024,
+            task=embedding_task,
+        )
+    else:
+        print("Using JinaV3 embeddings (default)")
+        return JinaEmbeddingModel()
+
+
+# ============================================================================
 # MAIN INDEXING PIPELINE
 # ============================================================================
 
@@ -98,7 +122,11 @@ async def main() -> None:
     # Setup indexer and datastore
     db_path = Path(db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    indexer = DocumentIndexer()
+
+    # Create embedder using factory
+    embedder = create_embedder()
+    indexer = DocumentIndexer(embedding_model=embedder)
+
     store: KVaultNodeStore | None = None  # Lazy init after first document
     total_nodes = 0
 

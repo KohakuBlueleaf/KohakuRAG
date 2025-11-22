@@ -31,8 +31,8 @@ from openai import BadRequestError
 
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
-from kohakurag.embeddings import JinaEmbeddingModel
-from kohakurag.llm import OpenAIChatModel
+from kohakurag.embeddings import JinaEmbeddingModel, JinaV4EmbeddingModel
+from kohakurag.llm import OpenAIChatModel, OpenRouterChatModel
 
 
 Row = dict[str, Any]
@@ -47,13 +47,28 @@ db = "artifacts/wattbot.db"
 table_prefix = "wattbot"
 questions = "data/test_Q.csv"
 output = "artifacts/wattbot_answers.csv"
-model = "gpt-4o-mini"
-top_k = 5
+
+# LLM settings (defaulting to OpenRouter)
+llm_provider = "openrouter"  # Options: "openai", "openrouter"
+model = "openai/gpt-5-nano"  # Default model
 planner_model = None  # Falls back to model
+openrouter_api_key = None  # From env: OPENROUTER_API_KEY
+site_url = None  # Optional for OpenRouter
+app_name = None  # Optional for OpenRouter
+
+# Retrieval settings
+top_k = 5
 planner_max_queries = 3
 deduplicate_retrieval = False  # Deduplicate text results by node_id across queries
 rerank_strategy = None  # Options: None, "frequency", "score", "combined"
 top_k_final = None  # Optional: truncate to this many results after dedup+rerank (None = no truncation)
+
+# Embedding settings
+embedding_model = "jina"  # Options: "jina" (v3), "jinav4"
+embedding_dim = None  # For JinaV4: 128, 256, 512, 1024, 2048
+embedding_task = "retrieval"  # For JinaV4: "retrieval", "text-matching", "code"
+
+# Other settings
 metadata = "data/metadata.csv"
 max_retries = 3
 max_concurrent = 10
@@ -207,12 +222,81 @@ def normalize_answer_value(raw: str, question: str) -> str:
 
 
 # ============================================================================
+# FACTORY FUNCTIONS
+# ============================================================================
+
+
+def create_embedder(config):
+    """Create embedder based on config settings.
+
+    Args:
+        config: Config object with embedding_model, embedding_dim, embedding_task
+
+    Returns:
+        EmbeddingModel instance
+    """
+    model_type = getattr(config, "embedding_model", "jina")
+
+    if model_type == "jinav4":
+        dim = getattr(config, "embedding_dim", 1024)
+        task = getattr(config, "embedding_task", "retrieval")
+        return JinaV4EmbeddingModel(truncate_dim=dim, task=task)
+    else:
+        # Default: Jina V3
+        return JinaEmbeddingModel()
+
+
+def create_chat_model(config, system_prompt: str):
+    """Create chat model based on config settings.
+
+    Args:
+        config: Config object with llm_provider, model, etc.
+        system_prompt: System prompt for the model
+
+    Returns:
+        ChatModel instance
+    """
+    provider = getattr(config, "llm_provider", "openrouter")
+
+    if provider == "openrouter":
+        return OpenRouterChatModel(
+            model=config.model,
+            api_key=getattr(config, "openrouter_api_key", None),
+            site_url=getattr(config, "site_url", None),
+            app_name=getattr(config, "app_name", None),
+            system_prompt=system_prompt,
+            max_concurrent=config.max_concurrent,
+        )
+    else:
+        # Default: OpenAI
+        return OpenAIChatModel(
+            model=config.model,
+            system_prompt=system_prompt,
+            max_concurrent=config.max_concurrent,
+        )
+
+
+# ============================================================================
 # GLOBAL SHARED EMBEDDER
 # Pre-load the Jina model once and share across concurrent tasks
 # ============================================================================
 
+
+def _create_global_embedder():
+    """Create global embedder using module-level config."""
+    # Create a SimpleNamespace from globals to mimic config object
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        embedding_task=embedding_task,
+    )
+    return create_embedder(config)
+
+
 # Create a single shared embedder (thread-safe via async executor)
-GLOBAL_EMBEDDER = JinaEmbeddingModel()
+GLOBAL_EMBEDDER = _create_global_embedder()
 
 
 # ============================================================================
@@ -337,6 +421,13 @@ class AppConfig:
     deduplicate_retrieval: bool = False
     rerank_strategy: str | None = None
     top_k_final: int | None = None
+    llm_provider: str = "openrouter"
+    openrouter_api_key: str | None = None
+    site_url: str | None = None
+    app_name: str | None = None
+    embedding_model: str = "jina"
+    embedding_dim: int | None = None
+    embedding_task: str = "retrieval"
 
 
 @dataclass(frozen=True)
@@ -358,22 +449,14 @@ def create_pipeline(config: AppConfig) -> RAGPipeline:
     )
 
     # Query planner LLM (generates retrieval queries)
-    planner_chat = OpenAIChatModel(
-        model=config.planner_model,
-        system_prompt=PLANNER_SYSTEM_PROMPT,
-        max_concurrent=config.max_concurrent,
-    )
+    planner_chat = create_chat_model(config, PLANNER_SYSTEM_PROMPT)
     planner = LLMQueryPlanner(
         chat=planner_chat,
         max_queries=config.planner_max_queries,
     )
 
     # Answer LLM (generates final structured answers)
-    chat = OpenAIChatModel(
-        model=config.model,
-        system_prompt=ANSWER_SYSTEM_PROMPT,
-        max_concurrent=config.max_concurrent,
-    )
+    chat = create_chat_model(config, ANSWER_SYSTEM_PROMPT)
 
     # Assemble the full RAG pipeline
     pipeline = RAGPipeline(
