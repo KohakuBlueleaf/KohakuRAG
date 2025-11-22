@@ -310,13 +310,36 @@ class OpenRouterChatModel(ChatModel):
                     return response
 
             except Exception as e:
-                # Check if it's a rate limit error
-                is_rate_limit = (
-                    "rate" in str(e).lower() and "limit" in str(e).lower()
-                ) or "429" in str(e)
+                error_str = str(e).lower()
 
-                if not is_rate_limit or attempt >= self._max_retries:
-                    raise  # Not a rate limit or exhausted retries
+                # Check if it's a retryable error
+                is_rate_limit = "rate" in error_str and "limit" in error_str
+                is_server_error = any(
+                    code in error_str
+                    for code in ["500", "502", "503", "504", "429", "cloudflare"]
+                )
+                is_validation_error = "validation error" in error_str
+
+                # Validation errors often mean API returned error response instead of success
+                if is_validation_error and "error" in error_str:
+                    is_server_error = True  # Treat as retryable
+
+                is_retryable = is_rate_limit or is_server_error
+
+                if not is_retryable or attempt >= self._max_retries:
+                    raise  # Not retryable or exhausted retries
+
+                # Determine error type for logging
+                if is_rate_limit:
+                    error_type = "Rate limit"
+                elif "502" in error_str or "cloudflare" in error_str:
+                    error_type = "Cloudflare/Server error (502)"
+                elif "500" in error_str or "503" in error_str:
+                    error_type = "Server error"
+                elif is_validation_error:
+                    error_type = "API error (validation failure)"
+                else:
+                    error_type = "Transient error"
 
                 # Calculate wait time with exponential backoff
                 wait_time = self._base_retry_delay * (2**attempt)
@@ -326,7 +349,7 @@ class OpenRouterChatModel(ChatModel):
                 wait_time = wait_time * jitter_factor
 
                 print(
-                    f"OpenRouter rate limit hit (attempt {attempt + 1}/{self._max_retries + 1}). "
+                    f"OpenRouter {error_type} (attempt {attempt + 1}/{self._max_retries + 1}). "
                     f"Waiting {wait_time:.2f}s before retry..."
                 )
                 await asyncio.sleep(wait_time)
