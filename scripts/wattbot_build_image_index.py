@@ -19,13 +19,14 @@ Usage (KohakuEngine):
 """
 
 import asyncio
+import sys
 from pathlib import Path
 
 import numpy as np
 from kohakuvault import VectorKVault
 
 from kohakurag import NodeKind
-from kohakurag.datastore import KVaultNodeStore
+from kohakurag.datastore import KVaultNodeStore, ImageStore
 from kohakurag.embeddings import JinaEmbeddingModel, JinaV4EmbeddingModel
 
 # ============================================================================
