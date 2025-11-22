@@ -10,6 +10,13 @@ from pathlib import Path
 
 from openai import AsyncOpenAI, RateLimitError
 
+try:
+    from openrouter import OpenRouter
+
+    OPENROUTER_AVAILABLE = True
+except ImportError:
+    OPENROUTER_AVAILABLE = False
+
 
 def _load_dotenv(path: str | Path = ".env") -> dict[str, str]:
     """Load environment variables from a .env file."""
@@ -250,3 +257,170 @@ class OpenAIVisionModel(VisionModel):
                 await asyncio.sleep(wait_time)
 
         raise RuntimeError("Unexpected end of retry loop")
+
+
+class OpenRouterVisionModel(VisionModel):
+    """Vision model using OpenRouter's native SDK for image captioning.
+
+    Supports vision-capable models through OpenRouter's unified API.
+    """
+
+    DEFAULT_CAPTION_PROMPT = (
+        "This is a figure/chart/diagram from a scientific research paper. "
+        "Describe what this image represents in detail, focusing on the actual content and data. "
+        "If it's a plot/chart: provide specific metric values, axis labels, trends, and comparisons shown. "
+        "If it's a diagram/architecture: describe the components, connections, and system structure. "
+        "If it's a table: extract key data points and comparisons. "
+        "Be specific and detailed (3-5 sentences), as this will be used for information retrieval."
+    )
+
+    def __init__(
+        self,
+        *,
+        model: str = "qwen/qwen3-vl-235b-a22b-instruct",
+        api_key: str | None = None,
+        max_retries: int = 5,
+        base_retry_delay: float = 3.0,
+        max_concurrent: int = 5,
+    ) -> None:
+        """Initialize OpenRouter vision model.
+
+        Args:
+            model: Model identifier (e.g., "qwen/qwen3-vl-235b-a22b-instruct")
+            api_key: OpenRouter API key (fallback to OPENROUTER_API_KEY env var)
+            max_retries: Maximum retry attempts on rate limit errors
+            base_retry_delay: Base delay for exponential backoff (seconds)
+            max_concurrent: Maximum concurrent API requests
+        """
+        # Check if OpenRouter SDK is available
+        if not OPENROUTER_AVAILABLE:
+            raise ImportError(
+                "openrouter package is required for OpenRouterVisionModel. "
+                "Install with: pip install openrouter"
+            )
+
+        # Resolve API key
+        key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            dotenv_vars = _load_dotenv()
+            key = dotenv_vars.get("OPENROUTER_API_KEY")
+
+        if not key:
+            raise ValueError(
+                "OPENROUTER_API_KEY is required. Set via env variable or pass as api_key parameter."
+            )
+
+        self._api_key = key
+        self._model = model
+        self._max_retries = max_retries
+        self._base_retry_delay = base_retry_delay
+
+        # Rate limiting
+        self._semaphore: asyncio.Semaphore | None = (
+            asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+        )
+
+    async def caption(
+        self,
+        image_data: bytes,
+        *,
+        prompt: str | None = None,
+        max_tokens: int = 300,
+    ) -> str:
+        """Generate a caption for an image using OpenRouter vision model.
+
+        Args:
+            image_data: Raw image bytes (JPEG, PNG, WebP, etc.)
+            prompt: Custom captioning prompt (uses DEFAULT_CAPTION_PROMPT if None)
+            max_tokens: Maximum tokens in response
+
+        Returns:
+            Generated caption text
+
+        Raises:
+            ValueError: If image_data is invalid
+            RuntimeError: If API call fails after all retries
+        """
+        if not image_data:
+            raise ValueError("image_data cannot be empty")
+
+        # Encode image to base64
+        image_b64 = base64.b64encode(image_data).decode("utf-8")
+
+        # Use default prompt if not provided
+        caption_prompt = prompt or self.DEFAULT_CAPTION_PROMPT
+
+        # Build message with vision content
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": caption_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                    },
+                ],
+            }
+        ]
+
+        # Retry loop with exponential backoff
+        for attempt in range(self._max_retries + 1):
+            try:
+                # Make API call with optional rate limiting
+                if self._semaphore is not None:
+                    async with self._semaphore:
+                        response = await self._make_request(messages, max_tokens)
+                        return response
+                else:
+                    response = await self._make_request(messages, max_tokens)
+                    return response
+
+            except Exception as e:
+                # Check if it's a rate limit error
+                is_rate_limit = (
+                    "rate" in str(e).lower() and "limit" in str(e).lower()
+                ) or "429" in str(e)
+
+                if not is_rate_limit or attempt >= self._max_retries:
+                    raise  # Not a rate limit or exhausted retries
+
+                # Calculate wait time with exponential backoff
+                wait_time = self._base_retry_delay * (2**attempt)
+
+                # Add jitter to prevent thundering herd (75-125% of wait_time)
+                jitter_factor = random.random() * 0.5 + 0.75
+                wait_time = wait_time * jitter_factor
+
+                print(
+                    f"OpenRouter vision rate limit hit (attempt {attempt + 1}/{self._max_retries + 1}). "
+                    f"Waiting {wait_time:.2f}s before retry..."
+                )
+                await asyncio.sleep(wait_time)
+
+        raise RuntimeError("Unexpected end of retry loop")
+
+    async def _make_request(self, messages: list[dict], max_tokens: int) -> str:
+        """Make the actual API request to OpenRouter.
+
+        Args:
+            messages: List of message dictionaries with vision content
+            max_tokens: Maximum tokens in response
+
+        Returns:
+            Response text from the model
+        """
+        # Use OpenRouter SDK with context manager (required for proper auth)
+        async with OpenRouter(api_key=self._api_key) as client:
+            response = await client.chat.send_async(
+                messages=messages,
+                model=self._model,
+                stream=False,
+            )
+
+            # Extract response text
+            if hasattr(response, "choices") and response.choices:
+                return response.choices[0].message.content or ""
+            else:
+                # Fallback for unexpected response format
+                return str(response)

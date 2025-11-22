@@ -36,7 +36,7 @@ from kohakurag.image_utils import compress_image, get_image_dimensions
 from kohakurag.parsers import dict_to_payload, payload_to_dict
 from kohakurag.pdf_utils import _extract_images
 from kohakurag.types import SentencePayload
-from kohakurag.vision import OpenAIVisionModel
+from kohakurag.vision import OpenAIVisionModel, OpenRouterVisionModel
 
 # ============================================================================
 # GLOBAL CONFIGURATION
@@ -47,7 +47,12 @@ docs_dir = "artifacts/docs"
 pdf_dir = "artifacts/raw_pdfs"
 output_dir = "artifacts/docs_with_images"
 db = "artifacts/wattbot_with_images.db"
+
+# Vision model settings
+llm_provider = "openrouter"  # Options: "openai", "openrouter"
 vision_model = "qwen/qwen3-vl-235b-a22b-instruct"
+openrouter_api_key = None  # From env: OPENROUTER_API_KEY
+
 limit = 0
 max_concurrent = 5
 
@@ -185,6 +190,26 @@ def compress_one_image(task: ImageTask, idx: int, total: int) -> ImageTask:
     return task
 
 
+def create_vision_model():
+    """Create vision model based on llm_provider config.
+
+    Returns:
+        VisionModel instance (OpenAI or OpenRouter)
+    """
+    if llm_provider == "openrouter":
+        return OpenRouterVisionModel(
+            model=vision_model,
+            api_key=openrouter_api_key,
+            max_concurrent=max_concurrent,
+        )
+    else:
+        # Default: OpenAI
+        return OpenAIVisionModel(
+            model=vision_model,
+            max_concurrent=max_concurrent,
+        )
+
+
 async def main() -> None:
     """Main entry point."""
     docs_dir_path = Path(docs_dir)
@@ -213,15 +238,13 @@ async def main() -> None:
     print("=" * 60)
     print(f"Documents: {len(json_files)}")
     print(f"Database:  {db_path}")
+    print(f"Provider:  {llm_provider}")
     print(f"Model:     {vision_model}")
     print(f"Concurrency: {max_concurrent}")
     print("=" * 60)
 
     # Initialize components
-    vision_client = OpenAIVisionModel(
-        model=vision_model,
-        max_concurrent=max_concurrent,
-    )
+    vision_client = create_vision_model()
     image_store = ImageStore(db_path, table="image_blobs")
 
     executor = ThreadPoolExecutor(max_workers=8)
