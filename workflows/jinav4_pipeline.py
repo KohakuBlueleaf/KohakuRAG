@@ -22,6 +22,18 @@ DB = "artifacts/wattbot_jinav4.db"
 TABLE_PREFIX = "wattbot_jv4"
 DOCS_WITH_IMAGES = "artifacts/docs_with_images"
 
+
+# Stage configs
+fetch_config = Config(
+    globals_dict={
+        "metadata": METADATA,
+        "pdf_dir": "artifacts/raw_pdfs",
+        "output_dir": "artifacts/docs",
+        "force_download": False,
+        "limit": 0,
+    }
+)
+
 # Stage 1: Add image captions using OpenRouter vision model
 caption_config = Config(
     globals_dict={
@@ -47,7 +59,7 @@ index_config = Config(
         "use_citations": False,
         # JinaV4 settings
         "embedding_model": "jinav4",
-        "embedding_dim": 1024,  # Matryoshka dimension
+        "embedding_dim": 512,  # Matryoshka dimension
         "embedding_task": "retrieval",
     }
 )
@@ -60,7 +72,7 @@ image_index_config = Config(
         "image_table": None,  # Auto: {prefix}_images_vec
         # JinaV4 settings
         "embedding_model": "jinav4",
-        "embedding_dim": 1024,  # Must match text embeddings
+        "embedding_dim": 512,  # Must match text embeddings
         "embedding_task": "retrieval",
         "embed_images_directly": True,  # Use JinaV4.encode_image()
     }
@@ -84,16 +96,16 @@ answer_config = Config(
         "planner_max_queries": 4,
         "deduplicate_retrieval": True,
         "rerank_strategy": "combined",
-        "top_k_final": 32,
+        "top_k_final": None,
         # JinaV4 settings
         "embedding_model": "jinav4",
-        "embedding_dim": 1024,
+        "embedding_dim": 512,
         "embedding_task": "retrieval",
         # Image settings
         "with_images": True,
         "top_k_images": 2,
         # Other
-        "max_retries": 3,
+        "max_retries": 2,
         "max_concurrent": -1,
         "single_run_debug": False,
         "question_id": None,
@@ -113,6 +125,7 @@ validate_config = Config(
 
 if __name__ == "__main__":
     scripts = [
+        Script("scripts/wattbot_fetch_docs.py", config=fetch_config),
         Script("scripts/wattbot_add_image_captions.py", config=caption_config),
         Script("scripts/wattbot_build_index.py", config=index_config),
         Script("scripts/wattbot_build_image_index.py", config=image_index_config),
