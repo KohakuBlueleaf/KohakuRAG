@@ -45,7 +45,15 @@ class RetrievalResult:
     question: str
     matches: list[RetrievalMatch]  # Direct vector search results
     snippets: list[ContextSnippet]  # Expanded with parent/child context
-    image_nodes: list[StoredNode] | None = None  # Images from retrieved sections
+    image_nodes: list[StoredNode] | None = (
+        None  # All images (for backward compatibility)
+    )
+    images_from_text: list[StoredNode] | None = (
+        None  # Images from text retrieval (caption only)
+    )
+    images_from_vision: list[StoredNode] | None = (
+        None  # Images from image search (send as images)
+    )
 
 
 @dataclass
@@ -533,9 +541,9 @@ class RAGPipeline:
         """Execute multi-query retrieval with image extraction.
 
         Image retrieval strategy:
-        1. Always extract images from retrieved text sections (default behavior)
-        2. Additionally retrieve from image-only index if top_k_images > 0
-        3. Combine and deduplicate both sources
+        1. Extract images from retrieved text sections (use captions only in LLM)
+        2. Additionally retrieve from image-only index if top_k_images > 0 (send as actual images to vision LLM)
+        3. Combine and deduplicate for backward compatibility (image_nodes)
 
         Args:
             question: User question
@@ -544,31 +552,34 @@ class RAGPipeline:
                          (0 = only extract from sections, >0 = also search image index)
 
         Returns:
-            RetrievalResult with image_nodes populated
+            RetrievalResult with separate image sources:
+            - images_from_text: Images from text retrieval (use captions)
+            - images_from_vision: Images from image search (send as actual images)
+            - image_nodes: Combined for backward compatibility
         """
         # Standard text retrieval
         result = await self.retrieve(question, top_k=top_k)
 
-        # Image retrieval: always extract from sections
+        # Images from text retrieval sections (captions only)
         images_from_sections = await self._extract_images_from_snippets(result.snippets)
 
-        # Additionally retrieve from image-only index if requested
+        # Images from dedicated image search (send as actual images)
         if top_k_images > 0:
             images_from_index = await self._retrieve_images_only(question, top_k_images)
         else:
             images_from_index = []
 
-        # Combine and deduplicate images
+        # Combine and deduplicate for backward compatibility
         all_images = []
         seen_ids = set()
 
-        # Prioritize images from sections (more contextually relevant)
+        # Prioritize images from sections
         for node in images_from_sections:
             if node.node_id not in seen_ids:
                 seen_ids.add(node.node_id)
                 all_images.append(node)
 
-        # Add images from dedicated index
+        # Add images from index
         for node in images_from_index:
             if node.node_id not in seen_ids:
                 seen_ids.add(node.node_id)
@@ -578,7 +589,9 @@ class RAGPipeline:
             question=result.question,
             matches=result.matches,
             snippets=result.snippets,
-            image_nodes=all_images if all_images else None,
+            image_nodes=all_images if all_images else None,  # Backward compatibility
+            images_from_text=images_from_sections if images_from_sections else None,
+            images_from_vision=images_from_index if images_from_index else None,
         )
 
     async def _retrieve_images_only(self, question: str, k: int) -> list[StoredNode]:

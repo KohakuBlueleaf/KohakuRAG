@@ -1,6 +1,7 @@
-"""Chat model integrations (e.g., OpenAI)."""
+"""Chat model integrations (e.g., OpenAI, OpenRouter)."""
 
 import asyncio
+import base64
 import os
 import random
 import re
@@ -188,3 +189,164 @@ class OpenAIChatModel(ChatModel):
                 await asyncio.sleep(wait_time)
 
         raise RuntimeError("Unexpected end of retry loop")
+
+
+class OpenRouterChatModel(ChatModel):
+    """Chat backend powered by OpenRouter's unified API using the native OpenRouter SDK.
+
+    Supports 300+ models from various providers including OpenAI, Anthropic, Google, etc.
+    Handles both text and vision requests (multi-modal content).
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = "openai/gpt-5-nano",
+        api_key: str | None = None,
+        site_url: str | None = None,
+        app_name: str | None = None,
+        system_prompt: str | None = None,
+        max_retries: int = 5,
+        base_retry_delay: float = 3.0,
+        max_concurrent: int = 10,
+    ) -> None:
+        """Initialize OpenRouter chat model.
+
+        Args:
+            model: Model identifier (e.g., "openai/gpt-5-nano", "anthropic/claude-3.5-sonnet")
+            api_key: OpenRouter API key (fallback to OPENROUTER_API_KEY env var)
+            site_url: Your app/site URL for OpenRouter headers (optional)
+            app_name: Your app name for OpenRouter headers (optional)
+            system_prompt: Default system message for all completions
+            max_retries: Maximum retry attempts on rate limit errors
+            base_retry_delay: Base delay for exponential backoff (seconds)
+            max_concurrent: Maximum concurrent requests (0 = unlimited)
+        """
+        # Import here to avoid requiring openrouter for users who don't use it
+        try:
+            from openrouter import OpenRouter
+        except ImportError:
+            raise ImportError(
+                "openrouter package is required for OpenRouterChatModel. "
+                "Install with: pip install openrouter"
+            )
+
+        # Resolve API key
+        key = api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            dotenv_vars = _load_dotenv()
+            key = dotenv_vars.get("OPENROUTER_API_KEY")
+
+        if not key:
+            raise ValueError(
+                "OPENROUTER_API_KEY is required. Set via env variable or pass as api_key parameter."
+            )
+
+        # Create OpenRouter client
+        self._client = OpenRouter(api_key=key)
+        self._model = model
+        self._system_prompt = system_prompt
+        self._site_url = site_url or "https://github.com/KohakuBlueleaf/KohakuRAG"
+        self._app_name = app_name or "KohakuRAG"
+        self._max_retries = max_retries
+        self._base_retry_delay = base_retry_delay
+
+        # Rate limiting
+        self._semaphore: asyncio.Semaphore | None = (
+            asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
+        )
+
+    async def complete(
+        self,
+        prompt: str | list[dict],
+        *,
+        system_prompt: str | None = None,
+    ) -> str:
+        """Generate completion using OpenRouter API.
+
+        Supports both text-only and vision (multimodal) requests.
+
+        Args:
+            prompt: Either a string (text-only) or list of content parts (vision)
+                   Text: "What is the capital of France?"
+                   Vision: [
+                       {"type": "text", "text": "What's in this image?"},
+                       {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+                   ]
+            system_prompt: Optional system message override
+
+        Returns:
+            Model's text response
+
+        Raises:
+            RuntimeError: If all retries are exhausted
+        """
+        # Build messages
+        messages = []
+
+        # Add system prompt if provided
+        effective_system_prompt = system_prompt or self._system_prompt
+        if effective_system_prompt:
+            messages.append({"role": "system", "content": effective_system_prompt})
+
+        # Add user message (supports both string and vision format)
+        messages.append({"role": "user", "content": prompt})
+
+        # Retry loop with exponential backoff
+        for attempt in range(self._max_retries + 1):
+            try:
+                # Make API call with optional rate limiting
+                if self._semaphore is not None:
+                    async with self._semaphore:
+                        response = await self._make_request(messages)
+                        return response
+                else:
+                    response = await self._make_request(messages)
+                    return response
+
+            except Exception as e:
+                # Check if it's a rate limit error
+                is_rate_limit = (
+                    "rate" in str(e).lower() and "limit" in str(e).lower()
+                ) or "429" in str(e)
+
+                if not is_rate_limit or attempt >= self._max_retries:
+                    raise  # Not a rate limit or exhausted retries
+
+                # Calculate wait time with exponential backoff
+                wait_time = self._base_retry_delay * (2**attempt)
+
+                # Add jitter to prevent thundering herd (75-125% of wait_time)
+                jitter_factor = random.random() * 0.5 + 0.75
+                wait_time = wait_time * jitter_factor
+
+                print(
+                    f"OpenRouter rate limit hit (attempt {attempt + 1}/{self._max_retries + 1}). "
+                    f"Waiting {wait_time:.2f}s before retry..."
+                )
+                await asyncio.sleep(wait_time)
+
+        raise RuntimeError("Unexpected end of retry loop")
+
+    async def _make_request(self, messages: list[dict]) -> str:
+        """Make the actual API request to OpenRouter.
+
+        Args:
+            messages: List of message dictionaries
+
+        Returns:
+            Response text from the model
+        """
+        # Use OpenRouter SDK's async method
+        response = await self._client.chat.send_async(
+            messages=messages,
+            model=self._model,
+            stream=False,
+        )
+
+        # Extract response text
+        if hasattr(response, "choices") and response.choices:
+            return response.choices[0].message.content or ""
+        else:
+            # Fallback for unexpected response format
+            return str(response)
