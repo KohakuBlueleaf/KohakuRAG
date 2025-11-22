@@ -123,23 +123,35 @@ async def main() -> None:
             task=embedding_task,
         )
 
-        # Extract image bytes from nodes
+        # Load ImageStore to retrieve image bytes
+        print("📦 Loading ImageStore...")
+        image_store = ImageStore(db_path, table="image_blobs")
+
+        # Extract image bytes from ImageStore using storage_key
         image_bytes_list = []
         valid_nodes = []
 
         for node in image_nodes:
-            img_data = node.metadata.get("image_data")
-            if img_data:
-                image_bytes_list.append(img_data)
-                valid_nodes.append(node)
-            else:
-                print(f"  ⚠️  No image_data in {node.node_id}, skipping")
+            # Get storage key from metadata (added by wattbot_add_image_captions.py)
+            storage_key = node.metadata.get("image_storage_key")
+            if not storage_key:
+                continue
+
+            try:
+                # Load image bytes from ImageStore
+                img_bytes = await image_store.load_image(storage_key)
+                if img_bytes:
+                    image_bytes_list.append(img_bytes)
+                    valid_nodes.append(node)
+            except Exception:
+                continue
 
         if not valid_nodes:
-            print("\n⚠️  No image nodes with image_data found!")
-            sys.exit(0)
+            print("\n⚠️  No images loaded from ImageStore!")
+            print("Make sure you ran wattbot_add_image_captions.py first.")
+            sys.exit(1)
 
-        print(f"✓ Loaded {len(valid_nodes)} images with binary data")
+        print(f"✓ Loaded {len(valid_nodes)} images from ImageStore")
 
         # Embed images directly using JinaV4
         print(f"\nEmbedding {len(image_bytes_list)} images with JinaV4...")
