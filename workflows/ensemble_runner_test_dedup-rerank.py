@@ -6,7 +6,6 @@ Usage:
     python configs/workflows/ensemble_runner.py
 """
 
-from copy import deepcopy
 from typing import Any
 from pathlib import Path
 from kohakuengine import Config, Script, Flow, capture_globals
@@ -17,8 +16,8 @@ TABLE_PREFIX = "wattbot_img"
 QUESTIONS = "data/test_Q.csv"
 METADATA = "data/metadata.csv"
 
-MODEL = "openai/GPT-5-mini"
-OUTPUT_DIR = Path("outputs/test-result-gpt-mini-2")
+MODEL = "openai/GPT-5-nano"
+OUTPUT_DIR = Path("outputs/gpt-nano-dedup-rerank-3")
 NUM_RUNS = 5
 
 # Models to run in parallel
@@ -50,6 +49,9 @@ with capture_globals() as ctx:
     top_k_images = 2
     questions_id = None
     single_run_debug = False
+    deduplicate_retrieval = True
+    rerank_strategy = "combined"
+    top_k_final = 32
 
 
 def create_answer_config(cfg: dict[str, Any]) -> Config:
@@ -101,3 +103,20 @@ if __name__ == "__main__":
     print("Ensemble complete!")
     print(f"Aggregated results: {AGGREGATED_OUTPUT}")
     print("=" * 60)
+
+    print("setting brief")
+    print(
+        f"Model: {MODEL}\n"
+        f"Ref mode: {REF_MODE}\n"
+        f"Tiebreak: {TIEBREAK}\n"
+        f"Num runs: {NUM_RUNS}\n"
+        f"Planner: {planner_model}\n"
+        f"Planner max queries: {planner_max_queries}\n"
+        f"Top k: {top_k}\n"
+        f"Max retries: {max_retries}\n"
+        f"Max concurrent: {max_concurrent}\n"
+        f"Top k images: {top_k_images}\n"
+        f"Deduplicate retrieval: {deduplicate_retrieval}\n"
+        f"Rerank strategy: {rerank_strategy}\n"
+        f"Top k final: {top_k_final}\n"
+    )

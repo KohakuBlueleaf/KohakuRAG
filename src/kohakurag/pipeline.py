@@ -236,16 +236,35 @@ class RAGPipeline:
         chat_model: ChatModel | None = None,
         planner: QueryPlanner | None = None,
         top_k: int = 5,
+        deduplicate_retrieval: bool = False,
+        rerank_strategy: str | None = None,
+        top_k_final: int | None = None,
     ) -> None:
         """Initialize RAG pipeline with pluggable components.
 
         All components default to in-memory/mock implementations for testing.
+
+        Args:
+            store: Vector database for storing and searching nodes
+            embedder: Model for converting text to embeddings
+            chat_model: LLM for generating answers
+            planner: Query expansion strategy
+            top_k: Default number of results per query
+            deduplicate_retrieval: Whether to deduplicate results by node_id
+            rerank_strategy: Strategy for reranking multi-query results
+                            Options: None, "frequency", "score", "combined"
+            top_k_final: Optional truncation after dedup+rerank (None = no truncation)
+                        Example: top_k=16, max_queries=3, top_k_final=20
+                        -> retrieves 48 docs, dedup+rerank, truncate to 20
         """
         self._store = store or InMemoryNodeStore()
         self._embedder = embedder or JinaEmbeddingModel()
         self._chat = chat_model or MockChatModel()
         self._planner = planner or SimpleQueryPlanner()
         self._top_k = top_k
+        self._deduplicate = deduplicate_retrieval
+        self._rerank_strategy = rerank_strategy
+        self._top_k_final = top_k_final
 
     @property
     def store(self) -> HierarchicalNodeStore:
@@ -255,16 +274,158 @@ class RAGPipeline:
         """Bulk insert pre-built nodes into the store."""
         await self._store.upsert_nodes(list(documents))
 
+    def _deduplicate_matches(
+        self, matches: list[RetrievalMatch]
+    ) -> list[RetrievalMatch]:
+        """Deduplicate matches by node_id, keeping the first occurrence.
+
+        When the same node appears in results from multiple queries, we keep
+        only the first occurrence to avoid duplicate context.
+
+        Args:
+            matches: List of retrieval matches (potentially with duplicates)
+
+        Returns:
+            Deduplicated list of matches
+        """
+        seen_ids: set[str] = set()
+        unique_matches: list[RetrievalMatch] = []
+
+        for match in matches:
+            if match.node.node_id not in seen_ids:
+                seen_ids.add(match.node.node_id)
+                unique_matches.append(match)
+
+        return unique_matches
+
+    def _rerank_matches(
+        self, matches: list[RetrievalMatch], num_queries: int
+    ) -> list[RetrievalMatch]:
+        """Rerank matches based on the configured strategy.
+
+        This method aggregates duplicate nodes and ranks them using
+        frequency (how many queries returned it) and total score (sum of scores).
+
+        Strategies:
+        - "frequency": Sort by (frequency, total_score) descending
+        - "score": Sort by total_score only (descending)
+        - "combined": Sort by weighted combination of normalized frequency and total_score
+
+        Args:
+            matches: List of retrieval matches (potentially with duplicates)
+            num_queries: Number of queries used for retrieval
+
+        Returns:
+            Reranked and deduplicated list of matches
+        """
+        if not self._rerank_strategy or not matches:
+            return matches
+
+        strategy = self._rerank_strategy.lower()
+
+        # Aggregate stats for each unique node
+        node_stats: dict[str, dict] = {}
+
+        for match in matches:
+            node_id = match.node.node_id
+            if node_id not in node_stats:
+                node_stats[node_id] = {
+                    "match": match,  # Keep reference to match object
+                    "frequency": 0,
+                    "total_score": 0.0,
+                    "max_score": match.score,
+                }
+
+            node_stats[node_id]["frequency"] += 1
+            node_stats[node_id]["total_score"] += match.score
+            node_stats[node_id]["max_score"] = max(
+                node_stats[node_id]["max_score"], match.score
+            )
+
+        # Extract unique matches with aggregated scores
+        unique_matches = []
+        for stats in node_stats.values():
+            # Update the match object's score to reflect total_score
+            match = stats["match"]
+            unique_matches.append(match)
+
+        # Sort based on strategy
+        if strategy == "frequency":
+            # Primary: frequency, Secondary: total_score
+            unique_matches.sort(
+                key=lambda m: (
+                    node_stats[m.node.node_id]["frequency"],
+                    node_stats[m.node.node_id]["total_score"],
+                ),
+                reverse=True,
+            )
+
+        elif strategy == "score":
+            # Sort by total_score only
+            unique_matches.sort(
+                key=lambda m: node_stats[m.node.node_id]["total_score"],
+                reverse=True,
+            )
+
+        elif strategy == "combined":
+            # Weighted combination of normalized frequency and total_score
+            max_freq = max(s["frequency"] for s in node_stats.values())
+            max_total_score = max(s["total_score"] for s in node_stats.values())
+
+            # Avoid division by zero
+            max_freq = max(max_freq, 1)
+            max_total_score = max(max_total_score, 0.001)
+
+            unique_matches.sort(
+                key=lambda m: (
+                    0.4 * (node_stats[m.node.node_id]["frequency"] / max_freq)
+                    + 0.6
+                    * (node_stats[m.node.node_id]["total_score"] / max_total_score)
+                ),
+                reverse=True,
+            )
+
+        else:
+            # Unknown strategy, return as-is (deduplicated by first occurrence)
+            pass
+
+        return unique_matches
+
     async def retrieve(
         self, question: str, *, top_k: int | None = None
     ) -> RetrievalResult:
         """Execute multi-query retrieval with hierarchical context expansion.
 
         For each planner-generated query, we independently search the vector
-        store for the top-k matching nodes (sentences or paragraphs). Results
-        from different queries are not re-sorted or merged by score; they are
-        simply concatenated in planner order so each query contributes its own
-        neighborhood of matches when top_k > 0.
+        store for the top-k matching nodes (sentences or paragraphs).
+
+        Behavior:
+        - If deduplicate_retrieval=False and rerank_strategy=None:
+          Results are simply concatenated in planner order (original behavior)
+        - If deduplicate_retrieval=True:
+          Duplicate nodes (by node_id) are removed, keeping first occurrence
+        - If rerank_strategy is set:
+          Results are reranked using the specified strategy
+          ("frequency", "score", or "combined") with frequency + total_score
+        - If top_k_final is set:
+          Results are truncated to top_k_final after dedup+rerank
+
+        Example configurations:
+        1. top_k=16, max_queries=3, deduplicate=False, rerank=None, top_k_final=None
+           -> 48 results (16 * 3, with potential duplicates)
+
+        2. top_k=16, max_queries=3, deduplicate=True, rerank=None, top_k_final=None
+           -> up to 48 unique results (duplicates removed)
+
+        3. top_k=16, max_queries=3, deduplicate=True, rerank="frequency", top_k_final=20
+           -> 20 results (best ranked by frequency + total score)
+
+        Args:
+            question: User question
+            top_k: Number of results per query (uses default if None)
+
+        Returns:
+            RetrievalResult with matches and expanded snippets
         """
         # Generate multiple retrieval queries (or just one if simple planner)
         queries = list(await self._planner.plan(question))
@@ -287,6 +448,19 @@ class RAGPipeline:
                 },  # Skip documents/sections
             )
             all_matches.extend(matches)
+
+        # Apply deduplication if enabled (before reranking)
+        if self._deduplicate:
+            all_matches = self._deduplicate_matches(all_matches)
+
+        # Apply reranking if strategy is configured
+        # Note: reranking also deduplicates and uses frequency + total_score
+        if self._rerank_strategy:
+            all_matches = self._rerank_matches(all_matches, len(queries))
+
+        # Apply top_k_final truncation if configured
+        if self._top_k_final is not None and self._top_k_final > 0:
+            all_matches = all_matches[: self._top_k_final]
 
         # Expand each match with hierarchical context
         snippets = await matches_to_snippets(
@@ -465,6 +639,7 @@ class RAGPipeline:
         top_k: int | None = None,
         with_images: bool = False,
         top_k_images: int = 0,
+        top_k_final: int | None = None,
     ) -> StructuredAnswerResult:
         """QA with custom prompt template and structured JSON parsing.
 
@@ -474,17 +649,27 @@ class RAGPipeline:
             top_k: Number of text results per query
             with_images: Whether to include images from retrieved sections
             top_k_images: Number of images from image-only index (0 = extract from sections)
+            top_k_final: Optional override for final result truncation
 
         Returns:
             Complete structured answer result
         """
-        # Use image-aware retrieval if requested
-        if with_images:
-            retrieval = await self.retrieve_with_images(
-                question, top_k=top_k, top_k_images=top_k_images
-            )
-        else:
-            retrieval = await self.retrieve(question, top_k=top_k)
+        # Temporarily override top_k_final if provided
+        original_top_k_final = self._top_k_final
+        if top_k_final is not None:
+            self._top_k_final = top_k_final
+
+        try:
+            # Use image-aware retrieval if requested
+            if with_images:
+                retrieval = await self.retrieve_with_images(
+                    question, top_k=top_k, top_k_images=top_k_images
+                )
+            else:
+                retrieval = await self.retrieve(question, top_k=top_k)
+        finally:
+            # Restore original top_k_final
+            self._top_k_final = original_top_k_final
 
         # Render user prompt with context (and images if present)
         rendered_prompt = prompt.render(
@@ -518,6 +703,7 @@ class RAGPipeline:
         top_k: int | None = None,
         with_images: bool = False,
         top_k_images: int = 0,
+        top_k_final: int | None = None,
     ) -> StructuredAnswerResult:
         """High-level entry point for structured question answering.
 
@@ -533,6 +719,7 @@ class RAGPipeline:
             top_k: Number of text results per query
             with_images: Whether to include images from retrieved sections
             top_k_images: Number of images from image-only index (requires wattbot_build_image_index.py)
+            top_k_final: Optional override for final result truncation
 
         Returns:
             Structured answer result
@@ -548,6 +735,7 @@ class RAGPipeline:
             top_k=top_k,
             with_images=with_images,
             top_k_images=top_k_images,
+            top_k_final=top_k_final,
         )
 
     def _build_prompt(
@@ -605,6 +793,10 @@ class RAGPipeline:
             for item in ref_ids_raw:
                 text = str(item).strip()
                 if text:
+                    # Clean up common LLM mistakes: strip "ref_id=" prefix
+                    # LLM sometimes copies the context format like [ref_id=doc1]
+                    if text.lower().startswith("ref_id="):
+                        text = text[7:].strip()  # Remove "ref_id=" prefix
                     ref_ids.append(text)
 
         return StructuredAnswer(

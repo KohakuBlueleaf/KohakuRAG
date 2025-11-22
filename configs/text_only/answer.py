@@ -10,6 +10,9 @@ model = "openai/gpt-oss-120b"
 top_k = 16
 planner_model = None
 planner_max_queries = 3
+deduplicate_retrieval = True  # Deduplicate text results by node_id across queries
+rerank_strategy = "frequency"  # Options: None, "frequency", "score", "combined"
+top_k_final = None  # Optional: truncate to this many results after dedup+rerank (None = no truncation)
 metadata = "data/metadata.csv"
 max_retries = 3
 max_concurrent = -1

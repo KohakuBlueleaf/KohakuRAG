@@ -4,12 +4,15 @@ from kohakuengine import Config
 
 db = "artifacts/wattbot_with_images.db"
 table_prefix = "wattbot_img"
-questions = "data/test_Q.csv"
-output = "artifacts/with_images_answers.csv"
-model = "openai/gpt-oss-120b"
+questions = "data/train_QA.csv"
+output = "artifacts/with_images_train_preds3.csv"
+model = "openai/GPT-5-mini"
 top_k = 16
 planner_model = None
 planner_max_queries = 3
+deduplicate_retrieval = True  # Deduplicate text results by node_id across queries
+rerank_strategy = "combined"  # Options: None, "frequency", "score", "combined"
+top_k_final = 24  # Optional: truncate to this many results after dedup+rerank (None = no truncation)
 metadata = "data/metadata.csv"
 max_retries = 3
 max_concurrent = -1
