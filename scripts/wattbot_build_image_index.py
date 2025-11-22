@@ -139,8 +139,8 @@ async def main() -> None:
                 continue
 
             try:
-                # Load image bytes from ImageStore
-                img_bytes = await image_store.load_image(storage_key)
+                # Load image bytes from ImageStore (method is get_image, not load_image)
+                img_bytes = await image_store.get_image(storage_key)
                 if img_bytes:
                     image_bytes_list.append(img_bytes)
                     valid_nodes.append(node)
