@@ -319,12 +319,21 @@ class OpenRouterChatModel(ChatModel):
                     for code in ["500", "502", "503", "504", "429", "cloudflare"]
                 )
                 is_validation_error = "validation error" in error_str
+                is_connection_error = any(
+                    phrase in error_str
+                    for phrase in [
+                        "peer closed connection",
+                        "incomplete chunked read",
+                        "connection reset",
+                        "remotprotocolerror",
+                    ]
+                )
 
                 # Validation errors often mean API returned error response instead of success
                 if is_validation_error and "error" in error_str:
                     is_server_error = True  # Treat as retryable
 
-                is_retryable = is_rate_limit or is_server_error
+                is_retryable = is_rate_limit or is_server_error or is_connection_error
 
                 if not is_retryable or attempt >= self._max_retries:
                     raise  # Not retryable or exhausted retries
@@ -336,6 +345,8 @@ class OpenRouterChatModel(ChatModel):
                     error_type = "Cloudflare/Server error (502)"
                 elif "500" in error_str or "503" in error_str:
                     error_type = "Server error"
+                elif is_connection_error:
+                    error_type = "Connection error (peer closed)"
                 elif is_validation_error:
                     error_type = "API error (validation failure)"
                 else:
