@@ -51,6 +51,9 @@ model = "gpt-4o-mini"
 top_k = 5
 planner_model = None  # Falls back to model
 planner_max_queries = 3
+deduplicate_retrieval = False  # Deduplicate text results by node_id across queries
+rerank_strategy = None  # Options: None, "frequency", "score", "combined"
+top_k_final = None  # Optional: truncate to this many results after dedup+rerank (None = no truncation)
 metadata = "data/metadata.csv"
 max_retries = 3
 max_concurrent = 10
@@ -331,6 +334,9 @@ class AppConfig:
     max_concurrent: int
     with_images: bool = False
     top_k_images: int = 0
+    deduplicate_retrieval: bool = False
+    rerank_strategy: str | None = None
+    top_k_final: int | None = None
 
 
 @dataclass(frozen=True)
@@ -375,6 +381,9 @@ def create_pipeline(config: AppConfig) -> RAGPipeline:
         embedder=GLOBAL_EMBEDDER,  # Shared embedder
         chat_model=chat,
         planner=planner,
+        deduplicate_retrieval=config.deduplicate_retrieval,
+        rerank_strategy=config.rerank_strategy,
+        top_k_final=config.top_k_final,
     )
 
     return pipeline
@@ -426,6 +435,11 @@ async def _answer_single_row(
     for attempt in range(max_retries + 1):
         current_top_k = base_top_k * (attempt + 1)
 
+        # Also multiply top_k_final by attempt count if configured
+        current_top_k_final = None
+        if config.top_k_final is not None:
+            current_top_k_final = config.top_k_final * (attempt + 1)
+
         try:
             qa_result = await pipeline.run_qa(
                 question,
@@ -435,6 +449,7 @@ async def _answer_single_row(
                 top_k=current_top_k,
                 with_images=config.with_images,
                 top_k_images=config.top_k_images,
+                top_k_final=current_top_k_final,
             )
             structured = qa_result.answer
             is_blank = (
@@ -736,6 +751,7 @@ async def main() -> None:
 
 
 def entry_point():
+    print(output)
     asyncio.run(main())
 
 

@@ -376,34 +376,21 @@ def main() -> None:
     avg_na = sum(item.na_score for item in scores) / total
     overall = VALUE_WEIGHT * avg_value + REF_WEIGHT * avg_ref + NA_WEIGHT * avg_na
 
-    # Print summary
-    print("=" * 70)
-    print("WattBot Validation Summary")
-    print("=" * 70)
-    print(f"Questions evaluated: {total}")
-
-    if missing:
-        preview = ", ".join(sorted(missing)[:5])
-        suffix = "..." if len(missing) > 5 else ""
-        print(f"Missing predictions: {len(missing)} - {preview}{suffix}")
-    if extra:
-        preview = ", ".join(sorted(extra)[:5])
-        suffix = "..." if len(extra) > 5 else ""
-        print(f"Extra predictions:   {len(extra)} - {preview}{suffix}")
-
-    print(
-        f"\nComponent scores: "
-        f"value={avg_value:.4f}, ref={avg_ref:.4f}, is_NA={avg_na:.4f}"
-    )
-    print(f"WattBot score: {overall:.4f}")
-    print("=" * 70)
-
     # Count perfect and failed questions
     perfect = [s for s in scores if s.weighted == 1.0]
     failed = [s for s in scores if s.weighted < 1.0]
 
-    print(f"\nPerfect answers: {len(perfect)}/{total} ({len(perfect)/total*100:.1f}%)")
-    print(f"Failed answers:  {len(failed)}/{total} ({len(failed)/total*100:.1f}%)")
+    # Always show per-question scores (compact format)
+    print("=" * 70)
+    print("Per-Question Scores")
+    print("=" * 70)
+    for entry in sorted(scores, key=lambda x: x.question_id):
+        status = "✓" if entry.weighted == 1.0 else "✗"
+        print(
+            f"{status} [{entry.question_id}] "
+            f"val:{entry.value_score:.3f} ref:{entry.ref_score:.3f} na:{entry.na_score:.3f} "
+            f"→ final:{entry.weighted:.3f}"
+        )
 
     # Show detailed error analysis
     if show_errors > 0:
@@ -454,6 +441,31 @@ def main() -> None:
                 if value_reason:
                     print(f"reason:     {value_reason}")
             print(f"\nFinal score: {entry.weighted:.3f}")
+
+    # Print aggregate summary at the end
+    print("\n" + "=" * 70)
+    print("FINAL VALIDATION SUMMARY")
+    print("=" * 70)
+    print(f"Questions evaluated: {total}")
+
+    if missing:
+        preview = ", ".join(sorted(missing)[:5])
+        suffix = "..." if len(missing) > 5 else ""
+        print(f"Missing predictions: {len(missing)} - {preview}{suffix}")
+    if extra:
+        preview = ", ".join(sorted(extra)[:5])
+        suffix = "..." if len(extra) > 5 else ""
+        print(f"Extra predictions:   {len(extra)} - {preview}{suffix}")
+
+    print(f"\nPerfect answers: {len(perfect)}/{total} ({len(perfect)/total*100:.1f}%)")
+    print(f"Failed answers:  {len(failed)}/{total} ({len(failed)/total*100:.1f}%)")
+
+    print(
+        f"\nComponent scores: "
+        f"value={avg_value:.4f}, ref={avg_ref:.4f}, is_NA={avg_na:.4f}"
+    )
+    print(f"\n🎯 FINAL WATTBOT SCORE: {overall:.4f}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
