@@ -21,7 +21,10 @@ dependencies = [
     "httpx>=0.27.0",
     "kohakuvault>=0.7.1",
     "openai>=2.8.0",
-    "Pillow>=10.0.0",
+    "Pillow>=12.0.0",
+    "openrouter",
+    "torchvision",
+    "peft"
 ]
 urls = { "Homepage" = "https://github.com/KohakuBlueleaf/KohakuRAG" }
 
