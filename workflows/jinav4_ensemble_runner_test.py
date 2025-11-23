@@ -14,12 +14,12 @@ from kohakuengine import Config, Flow, Script, capture_globals
 # Shared settings
 DB = "artifacts/wattbot_jinav4.db"
 TABLE_PREFIX = "wattbot_jv4"
-QUESTIONS = "data/train_QA.csv"
+QUESTIONS = "data/test_Q.csv"
 METADATA = "data/metadata.csv"
 
 MODEL = "openai/gpt-oss-120b"
-OUTPUT_DIR = Path("outputs/jinav4-ensemble")
-NUM_RUNS = 5
+OUTPUT_DIR = Path("outputs/jinav4-gpt-oss-120b")
+NUM_RUNS = 7
 
 # Models to run in parallel
 MODELS = [
@@ -68,7 +68,7 @@ with capture_globals() as ctx:
 
     # Other
     max_retries = 3
-    max_concurrent = -1
+    max_concurrent = 32
     single_run_debug = False
     question_id = None
 
@@ -117,23 +117,6 @@ if __name__ == "__main__":
 
     aggregate_script = Script("scripts/wattbot_aggregate.py", config=aggregate_config)
     aggregate_script.run()
-
-    # Validate aggregated results
-    print("\n" + "=" * 70)
-    print("Validating ensemble results...")
-    print("=" * 70)
-
-    validate_config = Config(
-        globals_dict={
-            "truth": "data/train_QA.csv",
-            "pred": AGGREGATED_OUTPUT,
-            "show_errors": 0,
-            "verbose": True,
-        }
-    )
-
-    validate_script = Script("scripts/wattbot_validate.py", config=validate_config)
-    validate_script.run()
 
     print("\n" + "=" * 70)
     print("JinaV4 Ensemble Complete!")

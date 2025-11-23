@@ -88,7 +88,7 @@ answer_config = Config(
         "metadata": METADATA,
         # LLM settings (OpenRouter)
         "llm_provider": "openrouter",
-        "model": "openai/gpt-5-nano",
+        "model": "openai/gpt-oss-120b",
         "planner_model": None,  # Falls back to model
         "openrouter_api_key": None,  # From env
         # Retrieval settings
@@ -125,10 +125,10 @@ validate_config = Config(
 
 if __name__ == "__main__":
     scripts = [
-        Script("scripts/wattbot_fetch_docs.py", config=fetch_config),
-        Script("scripts/wattbot_add_image_captions.py", config=caption_config),
-        Script("scripts/wattbot_build_index.py", config=index_config),
-        Script("scripts/wattbot_build_image_index.py", config=image_index_config),
+        # Script("scripts/wattbot_fetch_docs.py", config=fetch_config),
+        # Script("scripts/wattbot_add_image_captions.py", config=caption_config),
+        # Script("scripts/wattbot_build_index.py", config=index_config),
+        # Script("scripts/wattbot_build_image_index.py", config=image_index_config),
         Script("scripts/wattbot_answer.py", config=answer_config),
         Script("scripts/wattbot_validate.py", config=validate_config),
     ]

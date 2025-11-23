@@ -213,7 +213,7 @@ class OpenRouterChatModel(ChatModel):
         site_url: str | None = None,
         app_name: str | None = None,
         system_prompt: str | None = None,
-        max_retries: int = 5,
+        max_retries: int = 10,
         base_retry_delay: float = 3.0,
         max_concurrent: int = 10,
     ) -> None:
@@ -312,11 +312,31 @@ class OpenRouterChatModel(ChatModel):
             except Exception as e:
                 error_str = str(e).lower()
 
+                # Check for context length errors - these should NOT be retried internally
+                # They need to propagate to the outer retry mechanism which reduces context
+                # OpenRouter: "This endpoint's maximum context length is X tokens"
+                # OpenAI: "This model's maximum context length is X tokens" + code: "context_length_exceeded"
+                is_context_overflow = (
+                    "maximum context length" in error_str
+                    or "context_length_exceeded" in error_str
+                )
+
+                if is_context_overflow:
+                    raise  # Propagate immediately for outer retry with reduced context
+
                 # Check if it's a retryable error
                 is_rate_limit = "rate" in error_str and "limit" in error_str
                 is_server_error = any(
                     code in error_str
-                    for code in ["500", "502", "503", "504", "429", "cloudflare"]
+                    for code in [
+                        "500",
+                        "502",
+                        "503",
+                        "504",
+                        "429",
+                        "cloudflare",
+                        "server",
+                    ]
                 )
                 is_validation_error = "validation error" in error_str
                 is_connection_error = any(
@@ -353,7 +373,7 @@ class OpenRouterChatModel(ChatModel):
                     error_type = "Transient error"
 
                 # Calculate wait time with exponential backoff
-                wait_time = self._base_retry_delay * (2**attempt)
+                wait_time = self._base_retry_delay * (1.414**attempt)
 
                 # Add jitter to prevent thundering herd (75-125% of wait_time)
                 jitter_factor = random.random() * 0.5 + 0.75
@@ -361,7 +381,8 @@ class OpenRouterChatModel(ChatModel):
 
                 print(
                     f"OpenRouter {error_type} (attempt {attempt + 1}/{self._max_retries + 1}). "
-                    f"Waiting {wait_time:.2f}s before retry..."
+                    f"Waiting {wait_time:.2f}s before retry...\n"
+                    f"Error: {error_str}\n"
                 )
                 await asyncio.sleep(wait_time)
 

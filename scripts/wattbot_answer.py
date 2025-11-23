@@ -27,15 +27,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
-from openai import BadRequestError
-
-try:
-    from openrouter.errors.chaterror import ChatError as OpenRouterChatError
-
-    OPENROUTER_ERROR_AVAILABLE = True
-except ImportError:
-    OPENROUTER_ERROR_AVAILABLE = False
-    OpenRouterChatError = Exception  # Fallback
 
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
@@ -519,18 +510,37 @@ async def _answer_single_row(
             if not is_blank:
                 break  # Got a valid answer, stop retrying
 
-        except (BadRequestError, OpenRouterChatError) as e:
+        except Exception as e:
+            # Check if it's a JSON decode error (reduce context)
+            if isinstance(e, json.decoder.JSONDecodeError):
+                reduced_top_k = current_top_k - 1
+                print(
+                    f"JSON decode error for row {idx}, reducing top_k from {current_top_k} to {reduced_top_k}"
+                )
+                return await _answer_single_row(
+                    idx,
+                    row,
+                    columns,
+                    metadata_records,
+                    pipeline,
+                    retry_count=0,
+                    override_top_k=reduced_top_k,
+                )
+
             # Check if it's a context length overflow error
+            # OpenRouter: "This endpoint's maximum context length is X tokens"
+            # OpenAI: "This model's maximum context length is X tokens" + code: "context_length_exceeded"
             error_msg = str(e).lower()
             is_context_overflow = (
-                "context length" in error_msg
-                or "maximum context" in error_msg
-                or "tokens" in error_msg
-                and "requested" in error_msg
+                "maximum context length" in error_msg
+                or "context_length_exceeded" in error_msg
             )
 
             if is_context_overflow:
                 reduced_top_k = current_top_k - 1
+                print(
+                    f"Context overflow for row {idx}, reducing top_k from {current_top_k} to {reduced_top_k}"
+                )
                 return await _answer_single_row(
                     idx,
                     row,
@@ -541,18 +551,7 @@ async def _answer_single_row(
                     override_top_k=reduced_top_k,
                 )
             else:
-                raise  # Not a context overflow error
-        except json.decoder.JSONDecodeError:
-            reduced_top_k = current_top_k - 1
-            return await _answer_single_row(
-                idx,
-                row,
-                columns,
-                metadata_records,
-                pipeline,
-                retry_count=0,
-                override_top_k=reduced_top_k,
-            )
+                raise  # Not a recoverable error, propagate
 
     # Create blank result if we don't have a valid answer
     if qa_result is None or structured is None:
