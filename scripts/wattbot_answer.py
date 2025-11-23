@@ -29,6 +29,14 @@ from typing import Any, Mapping, Sequence
 
 from openai import BadRequestError
 
+try:
+    from openrouter.errors.chaterror import ChatError as OpenRouterChatError
+
+    OPENROUTER_ERROR_AVAILABLE = True
+except ImportError:
+    OPENROUTER_ERROR_AVAILABLE = False
+    OpenRouterChatError = Exception  # Fallback
+
 from kohakurag import RAGPipeline
 from kohakurag.datastore import KVaultNodeStore
 from kohakurag.embeddings import JinaEmbeddingModel, JinaV4EmbeddingModel
@@ -511,10 +519,17 @@ async def _answer_single_row(
             if not is_blank:
                 break  # Got a valid answer, stop retrying
 
-        except BadRequestError as e:
+        except (BadRequestError, OpenRouterChatError) as e:
             # Check if it's a context length overflow error
             error_msg = str(e).lower()
-            if "context length" in error_msg or "maximum context" in error_msg:
+            is_context_overflow = (
+                "context length" in error_msg
+                or "maximum context" in error_msg
+                or "tokens" in error_msg
+                and "requested" in error_msg
+            )
+
+            if is_context_overflow:
                 reduced_top_k = current_top_k - 1
                 return await _answer_single_row(
                     idx,
