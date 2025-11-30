@@ -84,6 +84,31 @@ python workflows/jinav4_pipeline_nocaption.py
 
 ---
 
+### Workflow 3: Ensemble Runner
+
+**File:** `workflows/jinav4_ensemble_runner.py`
+
+**Steps:**
+1. Run multiple parallel inference jobs
+2. Aggregate results using majority voting
+3. Validate aggregated predictions
+
+**Usage:**
+```bash
+python workflows/jinav4_ensemble_runner.py
+```
+
+**Output:**
+- Individual predictions: `artifacts/ensemble/run{n}_preds.csv`
+- Aggregated: `artifacts/jinav4_ensemble_preds.csv`
+
+**Configuration options:**
+- `num_runs`: Number of parallel inference runs
+- `ref_mode`: Aggregation mode (`union`, `intersection`, etc.)
+- `ignore_blank`: Filter out `is_blank` before voting
+
+---
+
 ## Configuration Options
 
 ### Embedding Settings
@@ -139,6 +164,16 @@ top_k_final = 24  # Final truncation after reranking
 # Image retrieval
 with_images = True
 top_k_images = 4  # Images from dedicated search
+```
+
+### Aggregation Settings (for Ensemble)
+
+```python
+ref_mode = "union"  # How to aggregate ref_ids
+# Options: "independent", "ref_priority", "answer_priority", "union", "intersection"
+
+ignore_blank = False  # Filter out "is_blank" before voting
+# Set True when some runs may fail due to rate limits
 ```
 
 ---

@@ -310,6 +310,17 @@ pipeline = RAGPipeline(
 )
 ```
 
+## Related: Ensemble Aggregation
+
+While dedup/rerank operates at the **retrieval** level (combining results from multi-query), there's also **ensemble aggregation** at the **inference** level (combining results from multiple runs). See `scripts/wattbot_aggregate.py` and `docs/usage.md` for:
+
+- **Aggregation modes**: `independent`, `ref_priority`, `answer_priority`, `union`, `intersection`
+- **ignore_blank**: Filter out `is_blank` answers before voting (if non-blank exist)
+
+These are complementary features:
+- **Dedup/rerank**: Improves retrieval quality within a single run
+- **Ensemble aggregation**: Improves robustness across multiple runs
+
 ## FAQ
 
 **Q: Should I always enable deduplication?**
@@ -331,3 +342,11 @@ A: Yes! Reranking inherently requires aggregating duplicate nodes to calculate f
 **Q: Can I use reranking without deduplication?**
 
 A: Yes, but the results will be automatically deduplicated as part of reranking (since we need to aggregate scores). Set `deduplicate_retrieval=False` if you want to preserve query order before reranking.
+
+**Q: What's the difference between dedup/rerank and ignore_blank?**
+
+A: Different levels of the pipeline:
+- **Dedup/rerank**: Operates on retrieval results (document nodes)
+- **ignore_blank**: Operates on aggregation (final answer values)
+
+Use dedup/rerank for better retrieval within a run; use ignore_blank for robust ensemble voting across runs.

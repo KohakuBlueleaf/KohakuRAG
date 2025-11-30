@@ -12,8 +12,21 @@ KohakuRAG is a general-purpose Retrieval-Augmented Generation (RAG) stack. The c
 ## Module overview
 
 ### Embeddings
-- `JinaEmbeddingModel` – wraps `jinaai/jina-embeddings-v3` via `AutoModel.from_pretrained(..., trust_remote_code=True)`. It automatically selects CUDA or MPS when available, defaults to FP16 on accelerators, and exposes a simple `embed(list[str]) -> numpy.ndarray` interface.
-- If a future project needs a different encoder, it can subclass the `EmbeddingModel` protocol, but the default builds, scripts, and tests all rely on the Jina model to keep behavior consistent.
+
+The embedding layer supports multiple models for different use cases:
+
+| Model | Class | Dimension | Multimodal | Matryoshka |
+|-------|-------|-----------|------------|------------|
+| Jina v3 | `JinaEmbeddingModel` | 768 (fixed) | ❌ | ❌ |
+| Jina v4 | `JinaV4EmbeddingModel` | 128–2048 | ✅ | ✅ |
+
+- **JinaEmbeddingModel** – wraps `jinaai/jina-embeddings-v3` via `AutoModel.from_pretrained(..., trust_remote_code=True)`. It automatically selects CUDA or MPS when available, defaults to FP16 on accelerators, and exposes a simple `embed(list[str]) -> numpy.ndarray` interface.
+- **JinaV4EmbeddingModel** – wraps `jinaai/jina-embeddings-v4` with multimodal support. Key features:
+  - **Matryoshka dimensions**: 128, 256, 512, 1024, 2048 (configurable via `truncate_dim`)
+  - **Task adapters**: `retrieval`, `text-matching`, `code` (configurable via `task`)
+  - **Direct image embedding**: `encode_image(pil_images) -> numpy.ndarray`
+  - **Longer context**: Up to 32,768 tokens (vs 8,192 for v3)
+- If a future project needs a different encoder, it can subclass the `EmbeddingModel` protocol.
 
 ### Datastore
 - **Nodes**: Each node stores ids, parent/child pointers, raw text, metadata (source, title, citation ids), and an embedding vector.
@@ -31,10 +44,32 @@ KohakuRAG is a general-purpose Retrieval-Augmented Generation (RAG) stack. The c
 - **Output**: The resulting tree is fed to the datastore where embeddings are computed and stored.
 
 ### RAG pipeline
-1. **Planner** – takes a question and emits retrieval intents (keywords, boolean filters, etc.). The default planner simply forwards the raw question; advanced planners can be LLM-powered.
-2. **Retriever** – executes each intent against the datastore, returning top-k nodes plus expanded context snippets.
-3. **Answerer** – sends the question + snippets + project-specific instructions to a chat model. The chat backend is pluggable (OpenAI, Azure, OSS). Responses are validated against a schema interface so different projects can define custom answer shapes.
-4. **Post-processing** – converts the structured answer object into whatever output format the caller expects (CSV row, JSON payload, etc.).
+1. **Planner** – takes a question and emits retrieval intents (keywords, boolean filters, etc.). The default planner simply forwards the raw question; advanced planners can be LLM-powered with configurable `planner_max_queries` for multi-query retrieval.
+2. **Retriever** – executes each intent against the datastore, returning top-k nodes plus expanded context snippets. With multi-query retrieval, results from all queries are combined.
+3. **Deduplication & Reranking** – optional post-retrieval processing:
+   - **Deduplicate**: Remove duplicate nodes by `node_id` across queries
+   - **Rerank**: Sort by `frequency` (multi-query consensus), `score` (total similarity), or `combined`
+   - **Truncate**: Limit final results to `top_k_final` documents
+4. **Answerer** – sends the question + snippets + project-specific instructions to a chat model. The chat backend is pluggable (OpenAI, OpenRouter, Azure, OSS). Responses are validated against a schema interface so different projects can define custom answer shapes.
+5. **Post-processing** – converts the structured answer object into whatever output format the caller expects (CSV row, JSON payload, etc.).
+
+### Ensemble & Aggregation
+
+For improved robustness, multiple inference runs can be aggregated using majority voting:
+
+| Mode | Description |
+|------|-------------|
+| `independent` | Vote ref_id and answer_value separately |
+| `ref_priority` | Vote on ref_id first, then answer among matching rows |
+| `answer_priority` | Vote on answer first, then ref among matching rows |
+| `union` | Vote on answer, union all refs from matching rows |
+| `intersection` | Vote on answer, intersect refs from matching rows |
+
+**Options:**
+- `ignore_blank`: Filter out `is_blank` answers before voting (if non-blank exist). Useful when some runs fail to produce an answer.
+- `tiebreak`: What to do when all answers differ – `first` (use first occurrence) or `blank` (return `is_blank`)
+
+See `scripts/wattbot_aggregate.py` and `workflows/sweeps/ensemble_*.py` for implementations.
 
 ### LLM Integration with Automatic Rate Limit Handling
 
@@ -89,3 +124,42 @@ This async design ensures that:
 4. **Answer generation** – connect the `RAGPipeline` to your preferred chat model and output format (CSV, JSON, API response, etc.) via a thin adapter.
 
 While WattBot currently supplies the main adapters and scripts, future projects can replicate the same pattern—only the thin ingestion/answer wrappers change; the `kohakurag` package stays untouched.
+
+## Hyperparameter Sweeps
+
+The `workflows/sweeps/` directory contains tools for systematic hyperparameter exploration:
+
+### Sweep Framework
+
+1. **Sweep scripts** – Generate prediction CSVs for all parameter combinations
+2. **Sweep plotter** – Validate and plot results with statistical analysis
+
+### Available Sweeps
+
+| File | Line Parameter | X Parameter |
+|------|----------------|-------------|
+| `top_k_vs_rerank.py` | `rerank_strategy` | `top_k` |
+| `top_k_vs_topk_final.py` | `top_k_final` | `top_k` |
+| `top_k_final_vs_rerank.py` | `rerank_strategy` | `top_k_final` |
+| `queries_vs_topk.py` | `planner_max_queries` | `top_k` |
+| `ensemble_size_vs_ref_mode.py` | `ref_mode` | `ensemble_size` |
+| `ensemble_vs_ignore_blank.py` | `ignore_blank` | `ensemble_size` |
+| `llm_model_vs_embedding.py` | `embedding_config` | `llm_model` |
+
+### Sweep Output
+
+Each sweep produces:
+- `metadata.json` – Sweep configuration
+- `{params}_run{n}_preds.csv` – Predictions for each configuration
+- `sweep_results.csv` – Validation scores (after plotting)
+- `plot_{metric}.png` – Visualization with mean, std dev, and max
+
+### Running Sweeps
+
+```bash
+# Run sweep (generates prediction files)
+python workflows/sweeps/top_k_vs_rerank.py
+
+# Plot results (validates and generates plots)
+python workflows/sweeps/sweep_plot.py outputs/sweeps/top_k_vs_rerank
+```
