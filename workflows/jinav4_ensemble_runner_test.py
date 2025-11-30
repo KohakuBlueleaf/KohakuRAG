@@ -18,7 +18,7 @@ QUESTIONS = "data/test_Q.csv"
 METADATA = "data/metadata.csv"
 
 MODEL = "openai/gpt-oss-120b"
-OUTPUT_DIR = Path("outputs/jinav4-gpt-oss-120b5")
+OUTPUT_DIR = Path("outputs/new-jinav4-gpt-oss-120b-3")
 NUM_RUNS = 7
 
 # Models to run in parallel
@@ -32,8 +32,9 @@ MODELS = [
 
 # Aggregation settings
 AGGREGATED_OUTPUT = (OUTPUT_DIR / "ensemble_preds.csv").as_posix()
-REF_MODE = "intersection"
+REF_MODE = "answer_priority"
 TIEBREAK = "first"
+IGNORE_BLANK = True
 
 # Base config
 with capture_globals() as ctx:
@@ -43,7 +44,9 @@ with capture_globals() as ctx:
     metadata = METADATA
 
     # LLM settings
-    llm_provider = "openrouter"
+    llm_provider = (
+        "openai"  # we use openai lib with openrouter api here, which is more stable
+    )
     planner_model = None
     openrouter_api_key = None  # From env
     site_url = "https://github.com/KohakuBlueleaf/KohakuRAG"
@@ -54,7 +57,7 @@ with capture_globals() as ctx:
     planner_max_queries = 6
     deduplicate_retrieval = True
     rerank_strategy = "combined"
-    top_k_final = 48
+    top_k_final = None
 
     # JinaV4 settings
     embedding_model = "jinav4"
@@ -67,7 +70,7 @@ with capture_globals() as ctx:
     send_images_to_llm = False
 
     # Prompt ordering (context before question to combat attention sink)
-    use_reordered_prompt = False
+    use_reordered_prompt = True
 
     # Other
     max_retries = 3
@@ -115,6 +118,7 @@ if __name__ == "__main__":
             "output": AGGREGATED_OUTPUT,
             "ref_mode": REF_MODE,
             "tiebreak": TIEBREAK,
+            "ignore_blank": IGNORE_BLANK,
         }
     )
 
@@ -139,5 +143,8 @@ if __name__ == "__main__":
     print(f"  Embedding: {embedding_model} (dim={embedding_dim})")
     print(f"  Top k images: {top_k_images}")
     print(f"  Send images to LLM: {send_images_to_llm}")
+    print(f"  Reordered prompt: {use_reordered_prompt}")
+    print(f"  Max retries: {max_retries}")
+    print(f"  Ignore blank: {IGNORE_BLANK}")
     print(f"\n  Aggregated output: {AGGREGATED_OUTPUT}")
     print("=" * 70)

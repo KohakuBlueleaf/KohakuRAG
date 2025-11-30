@@ -19,7 +19,7 @@ METADATA = "data/metadata.csv"
 
 MODEL = "openai/gpt-oss-120b"
 OUTPUT_DIR = Path("outputs/jinav4-ensemble")
-NUM_RUNS = 7
+NUM_RUNS = 9
 
 # Models to run in parallel
 MODELS = [
@@ -43,9 +43,9 @@ with capture_globals() as ctx:
     metadata = METADATA
 
     # LLM settings
-    llm_provider = "openrouter"
-    planner_model = None
-    openrouter_api_key = None  # From env
+    llm_provider = "openrouter"  # Options: "openai", "openrouter"
+    planner_model = None  # Falls back to model
+    openrouter_api_key = None  # From env: OPENROUTER_API_KEY
     site_url = "https://github.com/KohakuBlueleaf/KohakuRAG"
     app_name = "KohakuRAG"
 
@@ -53,13 +53,17 @@ with capture_globals() as ctx:
     top_k = 16
     planner_max_queries = 4
     deduplicate_retrieval = True
-    rerank_strategy = "combined"
-    top_k_final = 24
+    rerank_strategy = "combined"  # Options: None, "frequency", "score", "combined"
+    top_k_final = 24  # Truncate after dedup+rerank (None = no truncation)
 
-    # JinaV4 settings
-    embedding_model = "jinav4"
-    embedding_dim = 512
-    embedding_task = "retrieval"
+    # JinaV4 embedding settings
+    embedding_model = "jinav4"  # Options: "jina" (v3), "jinav4"
+    embedding_dim = 512  # Matryoshka: 128, 256, 512, 1024, 2048
+    embedding_task = "retrieval"  # Options: "retrieval", "text-matching", "code"
+
+    # Paragraph search mode (runtime toggle, requires "both" mode during indexing)
+    # Options: "averaged", "full"
+    paragraph_search_mode = "averaged"
 
     # Image settings
     with_images = True
