@@ -14,9 +14,16 @@ table_prefix = "wattbot_jv4"
 use_citations = False
 
 # JinaV4 embedding settings
-embedding_model = "jinav4"
-embedding_dim = 1024  # Matryoshka: 128, 256, 512, 1024, 2048
-embedding_task = "retrieval"  # or "text-matching", "code"
+embedding_model = "jinav4"  # Options: "jina" (v3), "jinav4"
+embedding_dim = 1024  # Matryoshka dimensions: 128, 256, 512, 1024, 2048
+embedding_task = "retrieval"  # Options: "retrieval", "text-matching", "code"
+
+# Paragraph embedding mode
+# Options:
+#   - "averaged": Paragraph embedding = average of sentence embeddings
+#   - "full": Paragraph embedding = direct embedding of paragraph text
+#   - "both": Store both averaged (main) and full (separate table) - allows runtime toggle
+paragraph_embedding_mode = "both"
 
 
 def config_gen():
