@@ -3,7 +3,19 @@
 Aggregate multiple result CSVs using majority voting.
 
 For each question, selects the most frequent answer_value as the final answer.
-Reference IDs can be aggregated using union or intersection of selected answers.
+Reference IDs can be aggregated using different strategies.
+
+Ref modes:
+- independent: Vote ref_id and answer_value separately (simple majority)
+- ref_priority: First vote on ref_id, then vote answer among rows with winning ref
+- answer_priority: First vote on answer, then vote ref among rows with winning answer
+- union: Vote on answer, then union all ref_ids from matching rows
+- intersection: Vote on answer, then intersect ref_ids from matching rows
+
+Options:
+- ignore_blank: If True, filter out "is_blank" answers before voting
+  (only if non-blank answers exist). Useful for ensemble voting where
+  some runs may fail to produce an answer.
 
 Usage (CLI):
     python scripts/wattbot_aggregate.py artifacts/results/*.csv -o aggregated.csv
@@ -27,8 +39,13 @@ from typing import Literal
 
 inputs: list[str] = []  # Input CSV files (required)
 output = "artifacts/aggregated_preds.csv"
-ref_mode: Literal["union", "intersection"] = "union"
+ref_mode: Literal[
+    "independent", "ref_priority", "answer_priority", "union", "intersection"
+] = "union"
 tiebreak: Literal["blank", "first"] = "first"
+ignore_blank: bool = (
+    False  # Filter out "is_blank" before voting if non-blank answers exist
+)
 
 # Column names matching existing scripts
 COLUMNS = [
@@ -90,18 +107,143 @@ def load_csv(path: Path) -> dict[str, dict]:
     return rows
 
 
+def majority_vote(values: list[str], filter_blank: bool = False) -> str:
+    """Return most common value (first occurrence breaks ties).
+
+    If filter_blank=True, filter out "is_blank" values before voting
+    (only if there are non-blank values).
+    """
+    if not values:
+        return "is_blank"
+
+    if filter_blank:
+        non_blank = [v for v in values if v != "is_blank"]
+        if non_blank:
+            values = non_blank
+
+    counter = Counter(values)
+    max_count = counter.most_common(1)[0][1]
+    tied = [v for v, c in counter.items() if c == max_count]
+    if len(tied) == 1:
+        return tied[0]
+    # First occurrence tiebreak
+    for v in values:
+        if v in tied:
+            return v
+    return tied[0]
+
+
+def aggregate_question_independent(
+    answers: list[dict], filter_blank: bool = False
+) -> tuple[str, str]:
+    """Vote ref_id and answer_value separately."""
+    answer_values = [normalize_value(r.get("answer_value", "")) for r in answers]
+    ref_ids = [r.get("ref_id", "is_blank") or "is_blank" for r in answers]
+    return majority_vote(answer_values, filter_blank), majority_vote(
+        ref_ids, filter_blank
+    )
+
+
+def aggregate_question_ref_priority(
+    answers: list[dict], filter_blank: bool = False
+) -> tuple[str, str]:
+    """First vote on ref_id, then vote answer among rows with winning ref."""
+    if not answers:
+        return "is_blank", "is_blank"
+
+    ref_ids = [r.get("ref_id", "is_blank") or "is_blank" for r in answers]
+    best_ref = majority_vote(ref_ids, filter_blank)
+
+    matching_rows = [
+        r for r in answers if (r.get("ref_id", "is_blank") or "is_blank") == best_ref
+    ]
+    answer_values = [normalize_value(r.get("answer_value", "")) for r in matching_rows]
+    best_val = majority_vote(answer_values, filter_blank)
+
+    return best_val, best_ref
+
+
+def aggregate_question_answer_priority(
+    answers: list[dict], filter_blank: bool = False
+) -> tuple[str, str]:
+    """First vote on answer, then vote ref among rows with winning answer."""
+    if not answers:
+        return "is_blank", "is_blank"
+
+    answer_values = [normalize_value(r.get("answer_value", "")) for r in answers]
+    best_val = majority_vote(answer_values, filter_blank)
+
+    matching_rows = [
+        r for r in answers if normalize_value(r.get("answer_value", "")) == best_val
+    ]
+    ref_ids = [r.get("ref_id", "is_blank") or "is_blank" for r in matching_rows]
+    best_ref = majority_vote(ref_ids, filter_blank)
+
+    return best_val, best_ref
+
+
+def aggregate_question_union(
+    answers: list[dict], filter_blank: bool = False
+) -> tuple[str, str]:
+    """Vote on answer, then union all ref_ids from matching rows."""
+    if not answers:
+        return "is_blank", "is_blank"
+
+    answer_values = [normalize_value(r.get("answer_value", "")) for r in answers]
+    best_val = majority_vote(answer_values, filter_blank)
+
+    matching_rows = [
+        r for r in answers if normalize_value(r.get("answer_value", "")) == best_val
+    ]
+
+    combined_refs = set()
+    for row in matching_rows:
+        combined_refs.update(parse_ref_ids(row.get("ref_id", "")))
+
+    return best_val, format_ref_ids(combined_refs)
+
+
+def aggregate_question_intersection(
+    answers: list[dict], filter_blank: bool = False
+) -> tuple[str, str]:
+    """Vote on answer, then intersect ref_ids from matching rows."""
+    if not answers:
+        return "is_blank", "is_blank"
+
+    answer_values = [normalize_value(r.get("answer_value", "")) for r in answers]
+    best_val = majority_vote(answer_values, filter_blank)
+
+    matching_rows = [
+        r for r in answers if normalize_value(r.get("answer_value", "")) == best_val
+    ]
+
+    ref_sets = [parse_ref_ids(row.get("ref_id", "")) for row in matching_rows]
+    if not ref_sets:
+        return best_val, "is_blank"
+
+    combined_refs = ref_sets[0]
+    for ref_set in ref_sets[1:]:
+        combined_refs = combined_refs.intersection(ref_set)
+
+    return best_val, format_ref_ids(combined_refs)
+
+
 def aggregate_results(
     csv_paths: list[Path],
-    ref_mode: Literal["union", "intersection"] = "union",
+    ref_mode: Literal[
+        "independent", "ref_priority", "answer_priority", "union", "intersection"
+    ] = "union",
     tiebreak_mode: Literal["blank", "first"] = "first",
+    filter_blank: bool = False,
 ) -> list[dict]:
     """
     Aggregate multiple result CSVs using majority voting.
 
     Args:
         csv_paths: List of paths to result CSVs
-        ref_mode: How to aggregate ref_ids - "union" or "intersection"
+        ref_mode: How to aggregate - "independent", "ref_priority", "answer_priority", "union", "intersection"
         tiebreak_mode: What to do when all answers differ - "blank" or "first"
+        filter_blank: If True, filter out "is_blank" answers before voting (if non-blank exist)
 
     Returns:
         List of aggregated result rows
@@ -133,25 +275,10 @@ def aggregate_results(
         if not answers:
             continue
 
-        # Count answer_value frequencies
-        value_counter = Counter()
-        value_to_rows = {}  # Map normalized value to list of rows with that value
-
-        for row in answers:
-            norm_val = normalize_value(row.get("answer_value", ""))
-            value_counter[norm_val] += 1
-            if norm_val not in value_to_rows:
-                value_to_rows[norm_val] = []
-            value_to_rows[norm_val].append(row)
-
-        # Find most common answer
-        most_common = value_counter.most_common()
-
-        # Check for tie or all different
-        if len(most_common) == len(answers) and len(answers) > 1:
-            # All answers are different
+        # Check if all answers are different (for tiebreak)
+        answer_values = [normalize_value(r.get("answer_value", "")) for r in answers]
+        if len(set(answer_values)) == len(answers) and len(answers) > 1:
             if tiebreak_mode == "blank":
-                # Use blank answer
                 result_row = answers[0].copy()
                 result_row["answer"] = "is_blank"
                 result_row["answer_value"] = "is_blank"
@@ -161,52 +288,31 @@ def aggregate_results(
                 result_row["explanation"] = "is_blank"
                 results.append(result_row)
                 continue
-            else:
-                # Use first answer (tiebreak_mode == "first")
-                selected_rows = [answers[0]]
+
+        # Aggregate based on mode
+        if ref_mode == "independent":
+            best_val, best_ref = aggregate_question_independent(answers, filter_blank)
+        elif ref_mode == "ref_priority":
+            best_val, best_ref = aggregate_question_ref_priority(answers, filter_blank)
+        elif ref_mode == "answer_priority":
+            best_val, best_ref = aggregate_question_answer_priority(
+                answers, filter_blank
+            )
+        elif ref_mode == "union":
+            best_val, best_ref = aggregate_question_union(answers, filter_blank)
+        elif ref_mode == "intersection":
+            best_val, best_ref = aggregate_question_intersection(answers, filter_blank)
         else:
-            # Get rows with most common answer
-            winning_value = most_common[0][0]
-            selected_rows = value_to_rows[winning_value]
+            raise ValueError(f"Unknown ref_mode: {ref_mode}")
 
-        # Use the first selected row as base
-        result_row = selected_rows[0].copy()
+        # Find a matching row to use as base
+        matching_rows = [
+            r for r in answers if normalize_value(r.get("answer_value", "")) == best_val
+        ]
+        result_row = (matching_rows[0] if matching_rows else answers[0]).copy()
 
-        # Aggregate ref_ids from selected rows
-        if ref_mode == "union":
-            combined_refs = set()
-            combined_urls = set()
-            combined_materials = []
-
-            for row in selected_rows:
-                combined_refs.update(parse_ref_ids(row.get("ref_id", "")))
-                # Also aggregate URLs if possible
-                try:
-                    urls = ast.literal_eval(row.get("ref_url", "[]"))
-                    if isinstance(urls, list):
-                        combined_urls.update(urls)
-                except:
-                    pass
-                # Collect supporting materials
-                mat = row.get("supporting_materials", "")
-                if mat and mat != "is_blank":
-                    combined_materials.append(mat)
-
-            result_row["ref_id"] = format_ref_ids(combined_refs)
-            if combined_urls:
-                result_row["ref_url"] = str(sorted(list(combined_urls)))
-            if combined_materials:
-                # Deduplicate materials
-                unique_materials = list(dict.fromkeys(combined_materials))
-                result_row["supporting_materials"] = "|".join(unique_materials)
-
-        else:  # intersection
-            ref_sets = [parse_ref_ids(row.get("ref_id", "")) for row in selected_rows]
-            if ref_sets:
-                combined_refs = ref_sets[0]
-                for ref_set in ref_sets[1:]:
-                    combined_refs = combined_refs.intersection(ref_set)
-                result_row["ref_id"] = format_ref_ids(combined_refs)
+        result_row["answer_value"] = best_val
+        result_row["ref_id"] = best_ref
 
         results.append(result_row)
 
@@ -239,6 +345,7 @@ def main():
     print(f"Aggregating {len(expanded_inputs)} result files...")
     print(f"  ref_id mode: {ref_mode}")
     print(f"  tiebreak mode: {tiebreak}")
+    print(f"  ignore_blank: {ignore_blank}")
     print()
 
     # Aggregate results
@@ -246,6 +353,7 @@ def main():
         expanded_inputs,
         ref_mode=ref_mode,
         tiebreak_mode=tiebreak,
+        filter_blank=ignore_blank,
     )
 
     # Write output

@@ -37,6 +37,13 @@ embedding_model = "jina"  # Options: "jina" (v3), "jinav4"
 embedding_dim = None  # For JinaV4: 128, 256, 512, 1024, 2048
 embedding_task = "retrieval"  # For JinaV4: "retrieval", "text-matching", "code"
 
+# Paragraph embedding mode
+# Options:
+#   - "averaged": Paragraph embedding = average of sentence embeddings (default for backward compat)
+#   - "full": Paragraph embedding = direct embedding of paragraph text
+#   - "both": Store both averaged (main) and full (separate table) - allows runtime toggle
+paragraph_embedding_mode = "both"
+
 
 def load_metadata(path: Path) -> dict[str, dict[str, str]]:
     records: dict[str, dict[str, str]] = {}
@@ -125,7 +132,11 @@ async def main() -> None:
 
     # Create embedder using factory
     embedder = create_embedder()
-    indexer = DocumentIndexer(embedding_model=embedder)
+    indexer = DocumentIndexer(
+        embedding_model=embedder,
+        paragraph_embedding_mode=paragraph_embedding_mode,
+    )
+    print(f"Paragraph embedding mode: {paragraph_embedding_mode}")
 
     store: KVaultNodeStore | None = None  # Lazy init after first document
     total_nodes = 0

@@ -67,6 +67,12 @@ embedding_model = "jina"  # Options: "jina" (v3), "jinav4"
 embedding_dim = None  # For JinaV4: 128, 256, 512, 1024, 2048
 embedding_task = "retrieval"  # For JinaV4: "retrieval", "text-matching", "code"
 
+# Paragraph search mode (runtime toggle, requires "both" mode during indexing)
+# Options:
+#   - "averaged": Use sentence-averaged paragraph embeddings (default)
+#   - "full": Use full paragraph embeddings (requires index built with "both" or "full" mode)
+paragraph_search_mode = "averaged"
+
 # Other settings
 metadata = "data/metadata.csv"
 max_retries = 3
@@ -463,6 +469,7 @@ def create_pipeline() -> RAGPipeline:
         Path(db),
         table_prefix=table_prefix,
         dimensions=None,
+        paragraph_search_mode=paragraph_search_mode,
     )
 
     # Create ImageStore if vision support is enabled
