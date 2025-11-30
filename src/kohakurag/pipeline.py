@@ -1,10 +1,16 @@
 """High-level RAG pipeline orchestration."""
 
+from __future__ import annotations
+
+import base64
 import json
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Protocol, Sequence
+from typing import TYPE_CHECKING, Iterable, Mapping, Protocol, Sequence
 
 from .datastore import HierarchicalNodeStore, InMemoryNodeStore, matches_to_snippets
+
+if TYPE_CHECKING:
+    from .datastore import ImageStore
 from .embeddings import EmbeddingModel, JinaEmbeddingModel
 from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
 
@@ -202,6 +208,49 @@ def format_context_with_images(
     return context
 
 
+def build_multimodal_content(
+    text_content: str,
+    image_nodes: Sequence[StoredNode] | None,
+    image_store: ImageStore | None = None,
+) -> str | list[dict]:
+    """Build multimodal content for vision-capable LLMs.
+
+    Args:
+        text_content: The main text prompt
+        image_nodes: Image nodes to include (must have image_storage_key in metadata)
+        image_store: ImageStore instance for retrieving image bytes
+
+    Returns:
+        - If no images or no image_store: returns text_content as string
+        - Otherwise: returns list of content parts for multimodal LLM
+    """
+    if not image_nodes or image_store is None:
+        return text_content
+
+    content_parts: list[dict] = [{"type": "text", "text": text_content}]
+
+    for node in image_nodes:
+        storage_key = node.metadata.get("image_storage_key")
+        if not storage_key:
+            continue
+
+        try:
+            # Use sync method directly (avoids async complexity in prompt building)
+            image_bytes = image_store._sync_get(storage_key)
+            if image_bytes:
+                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                content_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/webp;base64,{image_b64}"},
+                    }
+                )
+        except Exception:
+            continue  # Skip failed images
+
+    return content_parts if len(content_parts) > 1 else text_content
+
+
 # ============================================================================
 # DEFAULT IMPLEMENTATIONS
 # ============================================================================
@@ -247,6 +296,7 @@ class RAGPipeline:
         deduplicate_retrieval: bool = False,
         rerank_strategy: str | None = None,
         top_k_final: int | None = None,
+        image_store: ImageStore | None = None,
     ) -> None:
         """Initialize RAG pipeline with pluggable components.
 
@@ -264,6 +314,7 @@ class RAGPipeline:
             top_k_final: Optional truncation after dedup+rerank (None = no truncation)
                         Example: top_k=16, max_queries=3, top_k_final=20
                         -> retrieves 48 docs, dedup+rerank, truncate to 20
+            image_store: Optional ImageStore for vision-enabled LLM support
         """
         self._store = store or InMemoryNodeStore()
         self._embedder = embedder or JinaEmbeddingModel()
@@ -273,6 +324,7 @@ class RAGPipeline:
         self._deduplicate = deduplicate_retrieval
         self._rerank_strategy = rerank_strategy
         self._top_k_final = top_k_final
+        self._image_store = image_store
 
     @property
     def store(self) -> HierarchicalNodeStore:
@@ -653,6 +705,7 @@ class RAGPipeline:
         with_images: bool = False,
         top_k_images: int = 0,
         top_k_final: int | None = None,
+        send_images_to_llm: bool = False,
     ) -> StructuredAnswerResult:
         """QA with custom prompt template and structured JSON parsing.
 
@@ -663,6 +716,8 @@ class RAGPipeline:
             with_images: Whether to include images from retrieved sections
             top_k_images: Number of images from image-only index (0 = extract from sections)
             top_k_final: Optional override for final result truncation
+            send_images_to_llm: If True and image_store is set, send actual images
+                               to vision-capable LLMs instead of just captions
 
         Returns:
             Complete structured answer result
@@ -684,16 +739,26 @@ class RAGPipeline:
             # Restore original top_k_final
             self._top_k_final = original_top_k_final
 
-        # Render user prompt with context (and images if present)
+        # Render user prompt with context (and images if present as captions)
         rendered_prompt = prompt.render(
             question=question,
             snippets=retrieval.snippets,
             image_nodes=retrieval.image_nodes,
         )
 
+        # Build multimodal content if vision support is enabled
+        if send_images_to_llm and retrieval.images_from_vision and self._image_store:
+            prompt_content = build_multimodal_content(
+                rendered_prompt,
+                retrieval.images_from_vision,
+                self._image_store,
+            )
+        else:
+            prompt_content = rendered_prompt
+
         # Get LLM response
         raw = await self._chat.complete(
-            rendered_prompt, system_prompt=prompt.system_prompt
+            prompt_content, system_prompt=prompt.system_prompt
         )
 
         # Parse JSON structure
@@ -717,6 +782,7 @@ class RAGPipeline:
         with_images: bool = False,
         top_k_images: int = 0,
         top_k_final: int | None = None,
+        send_images_to_llm: bool = False,
     ) -> StructuredAnswerResult:
         """High-level entry point for structured question answering.
 
@@ -733,6 +799,7 @@ class RAGPipeline:
             with_images: Whether to include images from retrieved sections
             top_k_images: Number of images from image-only index (requires wattbot_build_image_index.py)
             top_k_final: Optional override for final result truncation
+            send_images_to_llm: If True, send actual images to vision-capable LLMs
 
         Returns:
             Structured answer result
@@ -749,6 +816,7 @@ class RAGPipeline:
             with_images=with_images,
             top_k_images=top_k_images,
             top_k_final=top_k_final,
+            send_images_to_llm=send_images_to_llm,
         )
 
     def _build_prompt(

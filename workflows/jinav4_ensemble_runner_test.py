@@ -18,7 +18,7 @@ QUESTIONS = "data/test_Q.csv"
 METADATA = "data/metadata.csv"
 
 MODEL = "openai/gpt-oss-120b"
-OUTPUT_DIR = Path("outputs/jinav4-gpt-oss-120b")
+OUTPUT_DIR = Path("outputs/jinav4-gpt-oss-120b5")
 NUM_RUNS = 7
 
 # Models to run in parallel
@@ -51,10 +51,10 @@ with capture_globals() as ctx:
 
     # Retrieval settings
     top_k = 16
-    planner_max_queries = 4
+    planner_max_queries = 6
     deduplicate_retrieval = True
     rerank_strategy = "combined"
-    top_k_final = None
+    top_k_final = 48
 
     # JinaV4 settings
     embedding_model = "jinav4"
@@ -65,6 +65,9 @@ with capture_globals() as ctx:
     with_images = True
     top_k_images = 2
     send_images_to_llm = False
+
+    # Prompt ordering (context before question to combat attention sink)
+    use_reordered_prompt = False
 
     # Other
     max_retries = 3

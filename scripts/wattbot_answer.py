@@ -29,7 +29,7 @@ from typing import Any, Mapping, Sequence
 
 
 from kohakurag import RAGPipeline
-from kohakurag.datastore import KVaultNodeStore
+from kohakurag.datastore import ImageStore, KVaultNodeStore
 from kohakurag.embeddings import JinaEmbeddingModel, JinaV4EmbeddingModel
 from kohakurag.llm import OpenAIChatModel, OpenRouterChatModel
 
@@ -76,6 +76,12 @@ question_id = None
 with_images = False
 top_k_images = 0
 
+# Vision support: send actual images to vision-capable LLMs
+send_images_to_llm = False
+
+# Prompt ordering: if True, use reordered prompt (context before question)
+use_reordered_prompt = False
+
 # ============================================================================
 # PROMPT TEMPLATES
 # WattBot-specific prompts live in this script; core library stays generic.
@@ -116,6 +122,50 @@ Return STRICT JSON with the following keys, in this order:
 - answer               (short sentence in natural language)
 - answer_value         (string with ONLY the numeric or categorical value in the requested unit, or "is_blank")
 - ref_id               (list of document ids from the context used as evidence; or "is_blank")
+
+JSON Answer:
+""".strip()
+
+# ============================================================================
+# REORDERED PROMPT TEMPLATES (context BEFORE question to combat attention sink)
+# ============================================================================
+ANSWER_SYSTEM_PROMPT_REORDERED = """
+You must answer strictly based on the provided context snippets.
+Do NOT use external knowledge or assumptions.
+If the context does not clearly support an answer, output "is_blank" for both answer_value and ref_id.
+
+CRITICAL: Match your answer_value to what the question asks for:
+- For "Which X..." questions expecting an identifier, return the NAME/identifier, not a numeric value.
+- For numeric questions with a unit, return only the number in that unit.
+- The "answer_unit" field in additional info tells you the expected format.
+""".strip()
+
+USER_PROMPT_TEMPLATE_REORDERED = """
+You will answer a question using ONLY the provided context snippets.
+If the context does not clearly support an answer, use "is_blank".
+
+Context snippets from documents:
+{context}
+
+---
+
+Now answer the following question based ONLY on the context above.
+
+Question: {question}
+
+Additional info (JSON): {additional_info_json}
+
+IMPORTANT: The "answer_unit" field specifies the expected format/unit for answer_value.
+- If answer_unit is a unit (e.g., "kW", "USD"), express answer_value as a number in that unit (no unit name).
+- If answer_unit is "is_blank", answer_value should be the exact identifier/name from context that answers the question.
+- For "Which X has highest Y?" questions with answer_unit="is_blank", return the NAME of X, NOT the numeric value of Y.
+- If the answer is a numeric range, format as [lower,upper].
+
+Return STRICT JSON with these keys in order:
+- explanation: 1-3 sentences explaining how context supports the answer and how you applied answer_unit
+- answer: Short natural language answer
+- answer_value: The value matching the expected format (or "is_blank")
+- ref_id: List of document IDs from context used as evidence (or "is_blank")
 
 JSON Answer:
 """.strip()
@@ -415,6 +465,9 @@ def create_pipeline() -> RAGPipeline:
         dimensions=None,
     )
 
+    # Create ImageStore if vision support is enabled
+    image_store = ImageStore(Path(db)) if send_images_to_llm else None
+
     # Query planner LLM (generates retrieval queries)
     planner_chat = create_chat_model(config, PLANNER_SYSTEM_PROMPT)
     planner = LLMQueryPlanner(
@@ -422,8 +475,13 @@ def create_pipeline() -> RAGPipeline:
         max_queries=planner_max_queries,
     )
 
+    # Select prompt based on config (reordered or original)
+    answer_system_prompt = (
+        ANSWER_SYSTEM_PROMPT_REORDERED if use_reordered_prompt else ANSWER_SYSTEM_PROMPT
+    )
+
     # Answer LLM (generates final structured answers)
-    chat = create_chat_model(config, ANSWER_SYSTEM_PROMPT)
+    chat = create_chat_model(config, answer_system_prompt)
 
     # Assemble the full RAG pipeline
     pipeline = RAGPipeline(
@@ -434,6 +492,7 @@ def create_pipeline() -> RAGPipeline:
         deduplicate_retrieval=deduplicate_retrieval,
         rerank_strategy=rerank_strategy,
         top_k_final=top_k_final,
+        image_store=image_store,
     )
 
     return pipeline
@@ -490,16 +549,29 @@ async def _answer_single_row(
         if top_k_final is not None:
             current_top_k_final = top_k_final * (attempt + 1)
 
+        # Select prompts based on config (reordered or original)
+        current_system_prompt = (
+            ANSWER_SYSTEM_PROMPT_REORDERED
+            if use_reordered_prompt
+            else ANSWER_SYSTEM_PROMPT
+        )
+        current_user_template = (
+            USER_PROMPT_TEMPLATE_REORDERED
+            if use_reordered_prompt
+            else USER_PROMPT_TEMPLATE
+        )
+
         try:
             qa_result = await pipeline.run_qa(
                 question,
-                system_prompt=ANSWER_SYSTEM_PROMPT,
-                user_template=USER_PROMPT_TEMPLATE,
+                system_prompt=current_system_prompt,
+                user_template=current_user_template,
                 additional_info=additional_info,
                 top_k=current_top_k,
                 with_images=with_images,
                 top_k_images=top_k_images,
                 top_k_final=current_top_k_final,
+                send_images_to_llm=send_images_to_llm,
             )
             structured = qa_result.answer
             is_blank = (
@@ -652,17 +724,26 @@ async def run_single_question_debug(
     structured = None
     is_blank = True
 
+    # Select prompts based on config (reordered or original)
+    current_system_prompt = (
+        ANSWER_SYSTEM_PROMPT_REORDERED if use_reordered_prompt else ANSWER_SYSTEM_PROMPT
+    )
+    current_user_template = (
+        USER_PROMPT_TEMPLATE_REORDERED if use_reordered_prompt else USER_PROMPT_TEMPLATE
+    )
+
     # Retry with increasing context window
     for attempt in range(max_retries + 1):
         current_top_k = top_k * (attempt + 1)
         qa_result = await pipeline.run_qa(
             question,
-            system_prompt=ANSWER_SYSTEM_PROMPT,
-            user_template=USER_PROMPT_TEMPLATE,
+            system_prompt=current_system_prompt,
+            user_template=current_user_template,
             additional_info=additional_info,
             top_k=current_top_k,
             with_images=with_images,
             top_k_images=top_k_images,
+            send_images_to_llm=send_images_to_llm,
         )
         structured = qa_result.answer
         is_blank = (
