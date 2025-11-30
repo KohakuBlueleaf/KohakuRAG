@@ -1,6 +1,6 @@
 """Document indexing pipeline (structure → embeddings → stored nodes)."""
 
-from typing import Iterable
+from typing import Iterable, Literal
 
 import numpy as np
 
@@ -15,6 +15,9 @@ from .types import (
     StoredNode,
     TreeNode,
 )
+
+# Embedding mode for paragraphs
+ParagraphEmbeddingMode = Literal["averaged", "full", "both"]
 
 
 def sentence_payloads_from_text(text: str) -> list[SentencePayload]:
@@ -46,10 +49,23 @@ def sections_from_text(document: DocumentPayload) -> list[SectionPayload]:
 
 
 class DocumentIndexer:
-    """Builds hierarchical nodes from DocumentPayloads and embeds them."""
+    """Builds hierarchical nodes from DocumentPayloads and embeds them.
 
-    def __init__(self, embedding_model: EmbeddingModel | None = None) -> None:
+    Args:
+        embedding_model: The embedding model to use. Defaults to JinaEmbeddingModel.
+        paragraph_embedding_mode: How to embed paragraphs:
+            - "averaged": Use weighted average of sentence embeddings (default)
+            - "full": Embed paragraph text directly
+            - "both": Store both averaged and full embeddings (full in metadata)
+    """
+
+    def __init__(
+        self,
+        embedding_model: EmbeddingModel | None = None,
+        paragraph_embedding_mode: ParagraphEmbeddingMode = "averaged",
+    ) -> None:
         self._embedding_model = embedding_model or JinaEmbeddingModel()
+        self._paragraph_embedding_mode = paragraph_embedding_mode
 
     async def index(self, document: DocumentPayload) -> list[StoredNode]:
         """Build hierarchical tree, compute embeddings, and return storable nodes."""
@@ -162,7 +178,13 @@ class DocumentIndexer:
         return root
 
     async def _embed_tree(self, root: TreeNode) -> None:
-        """Embed leaf nodes and propagate upward to parents."""
+        """Embed leaf nodes and propagate upward to parents.
+
+        Supports different paragraph embedding modes:
+        - "averaged": Paragraph embedding = average of sentence embeddings
+        - "full": Paragraph embedding = direct embedding of paragraph text
+        - "both": Store averaged as main embedding, full in metadata
+        """
         # Batch-embed all leaf nodes (sentences) for efficiency
         leaves = [node for node in self._flatten(root) if not node.children]
         if leaves:
@@ -172,21 +194,70 @@ class DocumentIndexer:
             for leaf, vector in zip(leaves, embeddings, strict=True):
                 leaf.embedding = vector
 
-        # Recursively compute parent embeddings from children
-        self._propagate_embeddings(root)
+        # Collect paragraphs if we need full embeddings
+        paragraphs = [
+            node for node in self._flatten(root) if node.kind == NodeKind.PARAGRAPH
+        ]
 
-    def _propagate_embeddings(self, node: TreeNode) -> np.ndarray:
-        """Recursively compute parent embeddings as average of children."""
+        # Compute full paragraph embeddings if needed
+        if self._paragraph_embedding_mode in ("full", "both") and paragraphs:
+            para_embeddings = await self._embedding_model.embed(
+                [p.text for p in paragraphs]
+            )
+            para_full_map = {
+                p.node_id: vec
+                for p, vec in zip(paragraphs, para_embeddings, strict=True)
+            }
+        else:
+            para_full_map = {}
+
+        # Recursively compute parent embeddings from children
+        self._propagate_embeddings(root, para_full_map)
+
+    def _propagate_embeddings(
+        self, node: TreeNode, para_full_map: dict[str, np.ndarray] | None = None
+    ) -> np.ndarray:
+        """Recursively compute parent embeddings as average of children.
+
+        Args:
+            node: Current node to process
+            para_full_map: Map of paragraph node_id -> full embedding (for "full"/"both" modes)
+        """
+        if para_full_map is None:
+            para_full_map = {}
+
         if node.embedding is not None:
             return node.embedding  # Already embedded (leaf node)
 
         # Recurse to children first
-        child_vectors = [self._propagate_embeddings(child) for child in node.children]
+        child_vectors = [
+            self._propagate_embeddings(child, para_full_map) for child in node.children
+        ]
         if not child_vectors:
             raise ValueError(f"Node {node.node_id} is missing an embedding.")
 
-        # Parent embedding = normalized average of children
-        node.embedding = average_embeddings(child_vectors)
+        # Compute averaged embedding from children
+        averaged_embedding = average_embeddings(child_vectors)
+
+        # Handle paragraph embedding modes
+        if node.kind == NodeKind.PARAGRAPH and node.node_id in para_full_map:
+            full_embedding = para_full_map[node.node_id]
+
+            if self._paragraph_embedding_mode == "full":
+                # Use full embedding as the main embedding
+                node.embedding = full_embedding
+            elif self._paragraph_embedding_mode == "both":
+                # Use averaged as main, store full in metadata
+                node.embedding = averaged_embedding
+                # Store full embedding as base64-encoded numpy array in metadata
+                node.metadata["full_embedding"] = full_embedding.tobytes().hex()
+            else:
+                # "averaged" mode - just use averaged
+                node.embedding = averaged_embedding
+        else:
+            # Non-paragraph nodes or no full embedding available
+            node.embedding = averaged_embedding
+
         return node.embedding
 
     def _flatten(self, node: TreeNode) -> Iterable[TreeNode]:

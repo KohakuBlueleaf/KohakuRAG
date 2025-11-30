@@ -3,12 +3,15 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
 import numpy as np
 from kohakuvault import KVault, VectorKVault
 
 from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
+
+# Runtime embedding selection mode for paragraphs
+ParagraphSearchMode = Literal["averaged", "full"]
 
 
 class HierarchicalNodeStore:
@@ -161,6 +164,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
     - Metadata stored in KohakuVault table
     - Embeddings indexed in sqlite-vec for fast similarity search
     - Both tables live in the same .db file
+    - Supports optional full paragraph embeddings in separate vector table
     """
 
     META_KEY = "__kohakurag_meta__"
@@ -172,6 +176,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
         table_prefix: str = "rag_nodes",
         dimensions: int | None = None,
         metric: str = "cosine",
+        paragraph_search_mode: ParagraphSearchMode = "averaged",
     ) -> None:
         """Initialize or open existing datastore.
 
@@ -180,8 +185,13 @@ class KVaultNodeStore(HierarchicalNodeStore):
             table_prefix: Logical namespace for tables
             dimensions: Embedding dimension (auto-detected if None and DB exists)
             metric: Distance metric ("cosine" or "l2")
+            paragraph_search_mode: Which embedding to use for paragraph search:
+                - "averaged": Use sentence-averaged embeddings (default)
+                - "full": Use full paragraph embeddings (requires "both" indexing mode)
         """
         self._path = str(path)
+        self._table_prefix = table_prefix
+        self._paragraph_search_mode = paragraph_search_mode
 
         # Open key-value table for metadata
         self._kv = KVault(self._path, table=f"{table_prefix}_kv")
@@ -212,7 +222,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
         # Store metadata
         self._kv[self.META_KEY] = {"dimensions": self._dimensions, "metric": metric}
 
-        # Open vector table
+        # Open vector table (main embeddings - averaged for paragraphs)
         self._vectors = VectorKVault(
             self._path,
             table=f"{table_prefix}_vec",
@@ -222,8 +232,22 @@ class KVaultNodeStore(HierarchicalNodeStore):
         self._vectors.enable_auto_pack()
         self._metric = metric
 
+        # Optional: full paragraph vector table (for "both" embedding mode)
+        self._para_full_vectors: VectorKVault | None = None
+        try:
+            self._para_full_vectors = VectorKVault(
+                self._path,
+                table=f"{table_prefix}_para_full_vec",
+                dimensions=self._dimensions,
+                metric=metric,
+            )
+            self._para_full_vectors.enable_auto_pack()
+        except Exception:
+            # Table doesn't exist - that's fine, it's created on demand
+            pass
+
         # Optional: image-only vector table (created by wattbot_build_image_index.py)
-        self._image_vectors = None
+        self._image_vectors: VectorKVault | None = None
         try:
             self._image_vectors = VectorKVault(
                 self._path,
@@ -272,6 +296,37 @@ class KVaultNodeStore(HierarchicalNodeStore):
 
             # Store metadata with vector row reference
             record["vector_row_id"] = vector_row
+
+            # Handle full paragraph embeddings if present in metadata
+            if node.kind == NodeKind.PARAGRAPH and "full_embedding" in node.metadata:
+                # Decode the full embedding from hex
+                full_emb_hex = node.metadata["full_embedding"]
+                full_emb = np.frombuffer(
+                    bytes.fromhex(full_emb_hex), dtype=np.float32
+                ).copy()
+
+                # Ensure para_full_vectors table exists
+                if self._para_full_vectors is None:
+                    self._para_full_vectors = VectorKVault(
+                        self._path,
+                        table=f"{self._table_prefix}_para_full_vec",
+                        dimensions=self._dimensions,
+                        metric=self._metric,
+                    )
+                    self._para_full_vectors.enable_auto_pack()
+
+                # Insert or update full paragraph embedding
+                para_row_id = record.get("para_full_row_id")
+                if para_row_id is None:
+                    para_row = self._para_full_vectors.insert(full_emb, node.node_id)
+                else:
+                    self._para_full_vectors.update(
+                        para_row_id, vector=full_emb, value=node.node_id
+                    )
+                    para_row = para_row_id
+
+                record["para_full_row_id"] = para_row
+
             self._kv[node.node_id] = record
 
     async def upsert_nodes(self, nodes: Sequence[StoredNode]) -> None:
@@ -293,34 +348,88 @@ class KVaultNodeStore(HierarchicalNodeStore):
         query_vector: np.ndarray,
         k: int,
         kinds: set[NodeKind] | None,
+        paragraph_search_mode: ParagraphSearchMode | None = None,
     ) -> list[RetrievalMatch]:
-        """Synchronous search logic (called via executor)."""
+        """Synchronous search logic (called via executor).
+
+        Args:
+            query_vector: Query embedding vector
+            k: Number of results to return
+            kinds: Optional filter for node types
+            paragraph_search_mode: Override instance-level paragraph search mode
+        """
         if query_vector.ndim != 1:
             raise ValueError("query_vector must be a 1D numpy array.")
 
-        # Query sqlite-vec index
-        results = self._vectors.search(
-            query_vector.astype(np.float32),
-            k=k,
-        )
+        # Determine which search mode to use
+        mode = paragraph_search_mode or self._paragraph_search_mode
 
-        # Fetch full nodes and apply filters
-        matches: list[RetrievalMatch] = []
-        for row_id, distance, node_id in results:
-            node = self._sync_get_node(node_id)
+        # Decide which vector tables to search
+        search_main = True
+        search_para_full = False
 
-            # Skip if node type doesn't match filter
-            if kinds is not None and node.kind not in kinds:
-                continue
+        if mode == "full" and self._para_full_vectors is not None:
+            # For "full" mode with paragraph filter, only search para_full table
+            if kinds is not None and kinds == {NodeKind.PARAGRAPH}:
+                search_main = False
+                search_para_full = True
+            elif kinds is None or NodeKind.PARAGRAPH in kinds:
+                # Mixed search: search both tables
+                search_para_full = True
 
-            # Convert distance to similarity score
-            score = (
-                1.0 - float(distance) if self._metric == "cosine" else -float(distance)
+        all_matches: list[RetrievalMatch] = []
+
+        # Search main vector table
+        if search_main:
+            results = self._vectors.search(
+                query_vector.astype(np.float32),
+                k=k,
             )
-            matches.append(RetrievalMatch(node=node, score=score))
 
-        matches.sort(key=lambda item: item.score, reverse=True)
-        return matches[:k]
+            for row_id, distance, node_id in results:
+                node = self._sync_get_node(node_id)
+
+                # Skip if node type doesn't match filter
+                if kinds is not None and node.kind not in kinds:
+                    continue
+
+                # In full mode, skip paragraphs from main table (use para_full instead)
+                if (
+                    mode == "full"
+                    and search_para_full
+                    and node.kind == NodeKind.PARAGRAPH
+                ):
+                    continue
+
+                score = (
+                    1.0 - float(distance)
+                    if self._metric == "cosine"
+                    else -float(distance)
+                )
+                all_matches.append(RetrievalMatch(node=node, score=score))
+
+        # Search full paragraph vector table
+        if search_para_full and self._para_full_vectors is not None:
+            para_results = self._para_full_vectors.search(
+                query_vector.astype(np.float32),
+                k=k,
+            )
+
+            for row_id, distance, node_id in para_results:
+                try:
+                    node = self._sync_get_node(node_id)
+                    score = (
+                        1.0 - float(distance)
+                        if self._metric == "cosine"
+                        else -float(distance)
+                    )
+                    all_matches.append(RetrievalMatch(node=node, score=score))
+                except Exception:
+                    continue
+
+        # Sort all matches by score and return top k
+        all_matches.sort(key=lambda item: item.score, reverse=True)
+        return all_matches[:k]
 
     async def search(
         self,
@@ -328,11 +437,26 @@ class KVaultNodeStore(HierarchicalNodeStore):
         *,
         k: int = 5,
         kinds: set[NodeKind] | None = None,
+        paragraph_search_mode: ParagraphSearchMode | None = None,
     ) -> list[RetrievalMatch]:
-        """Vector similarity search with optional node type filtering."""
+        """Vector similarity search with optional node type filtering.
+
+        Args:
+            query_vector: Query embedding vector
+            k: Number of results to return
+            kinds: Optional filter for node types
+            paragraph_search_mode: Override instance-level paragraph search mode:
+                - "averaged": Use sentence-averaged embeddings
+                - "full": Use full paragraph embeddings (if available)
+        """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            self._executor, self._sync_search, query_vector, k, kinds
+            self._executor,
+            self._sync_search,
+            query_vector,
+            k,
+            kinds,
+            paragraph_search_mode,
         )
 
     def _sync_search_images(
@@ -399,6 +523,18 @@ class KVaultNodeStore(HierarchicalNodeStore):
     def has_image_index(self) -> bool:
         """Check if image-only vector table exists."""
         return self._image_vectors is not None
+
+    def has_full_paragraph_index(self) -> bool:
+        """Check if full paragraph embedding vector table exists."""
+        return self._para_full_vectors is not None
+
+    def set_paragraph_search_mode(self, mode: ParagraphSearchMode) -> None:
+        """Set the default paragraph search mode at runtime.
+
+        Args:
+            mode: "averaged" or "full"
+        """
+        self._paragraph_search_mode = mode
 
     def _sync_get_context(
         self,
