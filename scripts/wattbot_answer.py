@@ -20,6 +20,7 @@ Usage (KohakuEngine):
 
 import asyncio
 import csv
+import io
 import json
 import re
 from dataclasses import dataclass
@@ -36,6 +37,58 @@ from kohakurag.llm import OpenAIChatModel, OpenRouterChatModel
 
 Row = dict[str, Any]
 BLANK_TOKEN = "is_blank"
+
+
+# ============================================================================
+# ASYNC CSV WRITER
+# Non-blocking CSV writer that uses asyncio.to_thread for file I/O
+# ============================================================================
+
+
+class AsyncCSVWriter:
+    """Async wrapper for csv.DictWriter that performs non-blocking file writes.
+
+    Uses asyncio.to_thread to offload blocking file I/O to a thread pool.
+    Supports csv.DictWriter interface with async methods.
+    """
+
+    def __init__(self, file_path: Path, fieldnames: Sequence[str]):
+        self._file_path = file_path
+        self._fieldnames = list(fieldnames)
+        self._file = None
+        self._writer = None
+
+    async def __aenter__(self) -> "AsyncCSVWriter":
+        # Open file in thread pool to avoid blocking
+        self._file = await asyncio.to_thread(
+            open, self._file_path, "w", newline="", encoding="utf-8"
+        )
+        self._writer = csv.DictWriter(self._file, fieldnames=self._fieldnames)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._file:
+            await asyncio.to_thread(self._file.close)
+
+    async def writeheader(self) -> None:
+        """Write CSV header row asynchronously."""
+        if self._writer is None:
+            raise RuntimeError("AsyncCSVWriter not opened")
+        # Write to in-memory buffer, then flush to file
+        await asyncio.to_thread(self._writer.writeheader)
+        await asyncio.to_thread(self._file.flush)
+
+    async def writerow(self, row: Row) -> None:
+        """Write a single row asynchronously."""
+        if self._writer is None:
+            raise RuntimeError("AsyncCSVWriter not opened")
+        await asyncio.to_thread(self._writer.writerow, row)
+
+    async def flush(self) -> None:
+        """Flush file buffer asynchronously."""
+        if self._file:
+            await asyncio.to_thread(self._file.flush)
+
 
 # ============================================================================
 # GLOBAL CONFIGURATION
@@ -716,8 +769,7 @@ async def run_single_question_debug(
     columns: Sequence[str],
     metadata_records: Mapping[str, Mapping[str, str]],
     pipeline: RAGPipeline,
-    writer: csv.DictWriter,
-    f_out,
+    writer: AsyncCSVWriter,
 ) -> None:
     """Run a single question with detailed debugging output."""
     question = first_row["question"]
@@ -803,8 +855,8 @@ async def run_single_question_debug(
         result_row["explanation"] = structured.explanation or BLANK_TOKEN
 
     # Write result and print debug info
-    writer.writerow(ensure_columns(result_row, columns))
-    f_out.flush()
+    await writer.writerow(ensure_columns(result_row, columns))
+    await writer.flush()
 
     print("=== Single-run debug ===")
     print(f"Question ID: {first_row.get('id')}")
@@ -831,13 +883,12 @@ async def run_all_questions(
     columns: Sequence[str],
     metadata_records: Mapping[str, Mapping[str, str]],
     pipeline: RAGPipeline,
-    writer: csv.DictWriter,
-    f_out,
+    writer: AsyncCSVWriter,
 ) -> None:
     """Process all questions and write results as they complete."""
     async for answer in answer_questions(rows, columns, metadata_records, pipeline):
-        writer.writerow(answer.row)
-        f_out.flush()
+        await writer.writerow(answer.row)
+        await writer.flush()
 
 
 # ============================================================================
@@ -867,9 +918,8 @@ async def main() -> None:
     # Create shared pipeline (uses global config variables)
     pipeline = create_pipeline()
 
-    with output_path.open("w", newline="", encoding="utf-8") as f_out:
-        writer = csv.DictWriter(f_out, fieldnames=list(columns))
-        writer.writeheader()
+    async with AsyncCSVWriter(output_path, columns) as writer:
+        await writer.writeheader()
 
         # DEBUG MODE: Process one question with detailed logging
         if single_run_debug:
@@ -892,14 +942,12 @@ async def main() -> None:
                 first_row = rows[0]
 
             await run_single_question_debug(
-                first_row, columns, metadata_records, pipeline, writer, f_out
+                first_row, columns, metadata_records, pipeline, writer
             )
 
         # STANDARD MODE: Process all questions concurrently, streaming results
         else:
-            await run_all_questions(
-                rows, columns, metadata_records, pipeline, writer, f_out
-            )
+            await run_all_questions(rows, columns, metadata_records, pipeline, writer)
 
 
 def entry_point():

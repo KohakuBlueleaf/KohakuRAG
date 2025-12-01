@@ -177,13 +177,13 @@ def _score_answer_value(true_value: str, pred_value: str) -> tuple[float, str | 
         lower_score, lower_err = _match_numeric(true_range[0], pred_range[0])
         upper_score, upper_err = _match_numeric(true_range[1], pred_range[1])
 
-        if lower_score == 1.0 and upper_score == 1.0:
+        if lower_score == 1 and upper_score == 1:
             return (1.0, None)
         else:
             errors = []
-            if lower_score == 0.0:
+            if lower_score == 0:
                 errors.append(f"Lower: {lower_err}")
-            if upper_score == 0.0:
+            if upper_score == 0:
                 errors.append(f"Upper: {upper_err}")
             return (lower_score * upper_score, f"Range mismatch - {'; '.join(errors)}")
 
@@ -254,7 +254,7 @@ def _score_ref_ids(true_value: str, pred_value: str) -> tuple[float, str | None]
     intersection = truth & pred
     jaccard = len(intersection) / len(union)
 
-    if jaccard == 1.0:
+    if jaccard == 1:
         return (1.0, None)
     else:
         missing = truth - pred
@@ -377,7 +377,7 @@ def main() -> None:
     overall = VALUE_WEIGHT * avg_value + REF_WEIGHT * avg_ref + NA_WEIGHT * avg_na
 
     # Count perfect and failed questions
-    perfect = [s for s in scores if s.weighted == 1.0]
+    perfect = [s for s in scores if s.weighted == 1]
     failed = [s for s in scores if s.weighted < 1.0]
 
     # Always show per-question scores (compact format)
@@ -385,7 +385,7 @@ def main() -> None:
     print("Per-Question Scores")
     print("=" * 70)
     for entry in sorted(scores, key=lambda x: x.question_id):
-        status = "✓" if entry.weighted == 1.0 else "✗"
+        status = "✓" if entry.weighted == 1 else "✗"
         print(
             f"{status} [{entry.question_id}] "
             f"val:{entry.value_score:.3f} ref:{entry.ref_score:.3f} na:{entry.na_score:.3f} "
