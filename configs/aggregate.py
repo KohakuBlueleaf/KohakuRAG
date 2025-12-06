@@ -3,11 +3,12 @@
 from kohakuengine import Config
 
 inputs = [
-    "artifacts/results/*.csv",
+    "outputs/ensemble/*.csv",
 ]
-output = "outputs/test.csv"
-ref_mode = "intersection"  # or "intersection"
+output = "outputs/ensemble/ensemble-test.csv"
+ref_mode = "answer_priority"  # or "intersection"
 tiebreak = "first"  # or "blank"
+ignore_blank = True
 
 
 def config_gen():

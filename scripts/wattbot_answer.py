@@ -141,6 +141,9 @@ send_images_to_llm = False
 # Prompt ordering: if True, use reordered prompt (context before question)
 use_reordered_prompt = False
 
+# Context overlap: if True, remove overlapping snippets (keep only parent nodes)
+no_overlap = False
+
 # ============================================================================
 # PROMPT TEMPLATES
 # WattBot-specific prompts live in this script; core library stays generic.
@@ -553,6 +556,7 @@ def create_pipeline() -> RAGPipeline:
         rerank_strategy=rerank_strategy,
         top_k_final=top_k_final,
         image_store=image_store,
+        no_overlap=no_overlap,
     )
 
     return pipeline
