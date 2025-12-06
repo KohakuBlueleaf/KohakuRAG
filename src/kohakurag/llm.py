@@ -151,8 +151,6 @@ class OpenAIChatModel(ChatModel):
                                 {"role": "user", "content": prompt},
                             ],
                         )
-                        choice = response.choices[0]
-                        return choice.message.content or ""
                 else:
                     # No rate limiting - make request directly
                     response = await self._client.chat.completions.create(
@@ -162,17 +160,33 @@ class OpenAIChatModel(ChatModel):
                             {"role": "user", "content": prompt},
                         ],
                     )
-                    choice = response.choices[0]
-                    return choice.message.content or ""
+
+                # Handle empty/malformed response - treat as retryable
+                if not response.choices:
+                    raise RuntimeError(
+                        "API returned empty choices - server error, will retry"
+                    )
+                return response.choices[0].message.content or ""
 
             except Exception as e:
+                error_str = str(e).lower()
+
                 # Check if it's a rate limit error (by type or message)
                 is_rate_limit = isinstance(e, RateLimitError) or (
-                    "rate" in str(e).lower() and "limit" in str(e).lower()
+                    "rate" in error_str and "limit" in error_str
                 )
 
-                if not is_rate_limit or attempt >= self._max_retries:
-                    raise  # Not a rate limit or exhausted retries
+                # Check for server errors (empty choices, 5xx, etc.)
+                is_server_error = (
+                    "server error" in error_str
+                    or "empty choices" in error_str
+                    or any(code in error_str for code in ["500", "502", "503", "504"])
+                )
+
+                is_retryable = is_rate_limit or is_server_error
+
+                if not is_retryable or attempt >= self._max_retries:
+                    raise  # Not retryable or exhausted retries
 
                 # Calculate wait time: server-recommended or exponential backoff
                 error_msg = str(e)
@@ -189,8 +203,9 @@ class OpenAIChatModel(ChatModel):
                 jitter_factor = random.random() * 0.5 + 0.75
                 wait_time = wait_time * jitter_factor
 
+                error_type = "Rate limit" if is_rate_limit else "Server error"
                 print(
-                    f"Rate limit hit (attempt {attempt + 1}/{self._max_retries + 1}). "
+                    f"{error_type} (attempt {attempt + 1}/{self._max_retries + 1}). "
                     f"Waiting {wait_time:.2f}s before retry..."
                 )
                 await asyncio.sleep(wait_time)

@@ -297,6 +297,7 @@ class RAGPipeline:
         rerank_strategy: str | None = None,
         top_k_final: int | None = None,
         image_store: ImageStore | None = None,
+        no_overlap: bool = False,
     ) -> None:
         """Initialize RAG pipeline with pluggable components.
 
@@ -315,6 +316,9 @@ class RAGPipeline:
                         Example: top_k=16, max_queries=3, top_k_final=20
                         -> retrieves 48 docs, dedup+rerank, truncate to 20
             image_store: Optional ImageStore for vision-enabled LLM support
+            no_overlap: If True, remove overlapping snippets during context expansion.
+                       When parent-child pairs exist, only keep the parent to avoid
+                       redundant text in the context.
         """
         self._store = store or InMemoryNodeStore()
         self._embedder = embedder or JinaEmbeddingModel()
@@ -325,6 +329,7 @@ class RAGPipeline:
         self._rerank_strategy = rerank_strategy
         self._top_k_final = top_k_final
         self._image_store = image_store
+        self._no_overlap = no_overlap
 
     @property
     def store(self) -> HierarchicalNodeStore:
@@ -528,6 +533,7 @@ class RAGPipeline:
             self._store,
             parent_depth=1,  # Include parent paragraph/section
             child_depth=1,  # Include child sentences
+            no_overlap=self._no_overlap,
         )
 
         return RetrievalResult(

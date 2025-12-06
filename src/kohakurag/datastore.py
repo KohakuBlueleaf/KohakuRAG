@@ -11,7 +11,7 @@ from kohakuvault import KVault, VectorKVault
 from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
 
 # Runtime embedding selection mode for paragraphs
-ParagraphSearchMode = Literal["averaged", "full"]
+ParagraphSearchMode = Literal["averaged", "full", "both"]
 
 
 class HierarchicalNodeStore:
@@ -188,6 +188,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
             paragraph_search_mode: Which embedding to use for paragraph search:
                 - "averaged": Use sentence-averaged embeddings (default)
                 - "full": Use full paragraph embeddings (requires "both" indexing mode)
+                - "both": Search both tables and merge results by score
         """
         self._path = str(path)
         self._table_prefix = table_prefix
@@ -364,9 +365,10 @@ class KVaultNodeStore(HierarchicalNodeStore):
         # Determine which search mode to use
         mode = paragraph_search_mode or self._paragraph_search_mode
 
-        # Decide which vector tables to search
+        # Decide which vector tables to search based on mode
         search_main = True
         search_para_full = False
+        skip_paragraphs_in_main = False  # For "full" mode only
 
         if mode == "full" and self._para_full_vectors is not None:
             # For "full" mode with paragraph filter, only search para_full table
@@ -374,10 +376,18 @@ class KVaultNodeStore(HierarchicalNodeStore):
                 search_main = False
                 search_para_full = True
             elif kinds is None or NodeKind.PARAGRAPH in kinds:
-                # Mixed search: search both tables
+                # Mixed search: search both tables, skip paragraphs in main
                 search_para_full = True
+                skip_paragraphs_in_main = True
+
+        elif mode == "both" and self._para_full_vectors is not None:
+            # For "both" mode: search both tables for paragraphs, merge by score
+            if kinds is None or NodeKind.PARAGRAPH in kinds:
+                search_para_full = True
+                # Don't skip paragraphs in main - we want results from both tables
 
         all_matches: list[RetrievalMatch] = []
+        seen_node_ids: set[str] = set()  # For deduplication in "both" mode
 
         # Search main vector table
         if search_main:
@@ -394,11 +404,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
                     continue
 
                 # In full mode, skip paragraphs from main table (use para_full instead)
-                if (
-                    mode == "full"
-                    and search_para_full
-                    and node.kind == NodeKind.PARAGRAPH
-                ):
+                if skip_paragraphs_in_main and node.kind == NodeKind.PARAGRAPH:
                     continue
 
                 score = (
@@ -407,6 +413,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
                     else -float(distance)
                 )
                 all_matches.append(RetrievalMatch(node=node, score=score))
+                seen_node_ids.add(node_id)
 
         # Search full paragraph vector table
         if search_para_full and self._para_full_vectors is not None:
@@ -416,6 +423,12 @@ class KVaultNodeStore(HierarchicalNodeStore):
             )
 
             for row_id, distance, node_id in para_results:
+                # In "both" mode, skip if already seen from main table
+                # (keep the higher score by sorting later)
+                if mode == "both" and node_id in seen_node_ids:
+                    # Still add it - we'll deduplicate by keeping max score
+                    pass
+
                 try:
                     node = self._sync_get_node(node_id)
                     score = (
@@ -427,8 +440,19 @@ class KVaultNodeStore(HierarchicalNodeStore):
                 except Exception:
                     continue
 
-        # Sort all matches by score and return top k
+        # Sort all matches by score
         all_matches.sort(key=lambda item: item.score, reverse=True)
+
+        # For "both" mode: deduplicate keeping highest score (already sorted)
+        if mode == "both":
+            deduped: list[RetrievalMatch] = []
+            dedup_ids: set[str] = set()
+            for match in all_matches:
+                if match.node.node_id not in dedup_ids:
+                    dedup_ids.add(match.node.node_id)
+                    deduped.append(match)
+            return deduped[:k]
+
         return all_matches[:k]
 
     async def search(
@@ -448,6 +472,7 @@ class KVaultNodeStore(HierarchicalNodeStore):
             paragraph_search_mode: Override instance-level paragraph search mode:
                 - "averaged": Use sentence-averaged embeddings
                 - "full": Use full paragraph embeddings (if available)
+                - "both": Search both tables and merge by score (requires "both" indexing)
         """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
@@ -671,13 +696,25 @@ async def matches_to_snippets(
     *,
     parent_depth: int = 1,
     child_depth: int = 0,
+    no_overlap: bool = False,
 ) -> list[ContextSnippet]:
     """Convert retrieval matches into context snippets using hierarchical context.
 
     For each matched node, this helper pulls a small neighborhood of parents
     and children via ``get_context`` and flattens them into ``ContextSnippet``
-    objects. It deliberately keeps duplicates and both sentences and paragraphs
-    so callers see the raw local context around each hit.
+    objects.
+
+    Args:
+        matches: List of retrieval matches
+        store: Node store for context lookup
+        parent_depth: How many parent levels to include
+        child_depth: How many child levels to include
+        no_overlap: If True, remove overlapping nodes by keeping only the largest
+                   (parent) node when parent-child pairs exist. This reduces
+                   redundant text in the context.
+
+    Returns:
+        List of context snippets
     """
     snippets: list[ContextSnippet] = []
     for rank, match in enumerate(matches, 1):
@@ -699,7 +736,60 @@ async def matches_to_snippets(
                     score=match.score,
                 )
             )
+
+    if no_overlap:
+        snippets = _remove_overlapping_snippets(snippets)
+
     return snippets
+
+
+def _remove_overlapping_snippets(snippets: list[ContextSnippet]) -> list[ContextSnippet]:
+    """Remove overlapping snippets by keeping only the largest (parent) nodes.
+
+    When a parent and child node both exist in snippets, the child's text is
+    contained within the parent's text. This function removes such children
+    to avoid redundant context.
+
+    The hierarchy is determined by node_id structure:
+    - Parent: "doc:sec1"
+    - Child: "doc:sec1:p1" (starts with parent_id + ":")
+
+    Args:
+        snippets: List of context snippets (may contain overlaps)
+
+    Returns:
+        Filtered list with no overlapping nodes (keeps parents)
+    """
+    if not snippets:
+        return snippets
+
+    # Collect all unique node_ids
+    all_node_ids = {s.node_id for s in snippets}
+
+    # Find node_ids that have an ancestor in the set
+    nodes_with_ancestor: set[str] = set()
+    for node_id in all_node_ids:
+        # Check if any other node_id is an ancestor of this one
+        # Ancestor relationship: ancestor_id is a prefix and followed by ":"
+        for other_id in all_node_ids:
+            if other_id != node_id and node_id.startswith(other_id + ":"):
+                # other_id is an ancestor of node_id
+                nodes_with_ancestor.add(node_id)
+                break
+
+    # Filter out snippets whose node_id has an ancestor present
+    # Also deduplicate by node_id (keep first occurrence)
+    seen_ids: set[str] = set()
+    filtered: list[ContextSnippet] = []
+    for snippet in snippets:
+        if snippet.node_id in nodes_with_ancestor:
+            continue  # Skip - parent already covers this content
+        if snippet.node_id in seen_ids:
+            continue  # Skip - already included
+        seen_ids.add(snippet.node_id)
+        filtered.append(snippet)
+
+    return filtered
 
 
 class ImageStore:
