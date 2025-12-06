@@ -1,23 +1,14 @@
-"""Sweep: LLM Model vs Embedding Setup
+"""Sweep: send_images_to_llm vs top_k_images
 
-Compares different LLM models across different embedding configurations.
+Compares the effect of sending actual images to the LLM vs just using captions,
+across different numbers of retrieved images.
 
-Line parameter (categorical): embedding_config
-X-axis parameter (categorical): llm_model
-
-LLM Models:
-- gpt-oss-120b (baseline)
-- GPT-5-mini
-- GPT-5-nano
-
-Embedding Configs:
-- jina_v3_text: Jina v3 text-only
-- jina_v3_img: Jina v3 text + images
-- jina_v4_img: Jina v4 text + images
+Line parameter (categorical): send_images_to_llm (True/False)
+X-axis parameter (numerical): top_k_images
 
 Usage:
-    python workflows/sweeps/llm_model_vs_embedding.py
-    python workflows/sweeps/llm_model_vs_embedding.py --num-runs 5
+    python workflows/sweeps/send_images_vs_top_k_images.py
+    python workflows/sweeps/send_images_vs_top_k_images.py --num-runs 5
 """
 
 import argparse
@@ -32,45 +23,13 @@ from kohakuengine import Config, Script, capture_globals
 # SWEEP PARAMETERS
 # ============================================================================
 
-# Line parameter: embedding config (categorical - each value = one line)
-LINE_PARAM = "embedding_config"
-LINE_CONFIGS: dict[str, dict[str, Any]] = {
-    "jina_v3_text": {
-        "db": "artifacts/wattbot_text_only.db",
-        "table_prefix": "wattbot_text",
-        "embedding_model": "jina",
-        "embedding_dim": None,
-        "with_images": False,
-        "top_k_images": 0,
-    },
-    "jina_v3_img": {
-        "db": "artifacts/wattbot_with_images.db",
-        "table_prefix": "wattbot_img",
-        "embedding_model": "jina",
-        "embedding_dim": None,
-        "with_images": True,
-        "top_k_images": 2,
-    },
-    "jina_v4_img": {
-        "db": "artifacts/wattbot_jinav4.db",
-        "table_prefix": "wattbot_jv4",
-        "embedding_model": "jinav4",
-        "embedding_dim": 512,
-        "with_images": True,
-        "top_k_images": 2,
-    },
-}
-LINE_VALUES: list[str] = list(LINE_CONFIGS.keys())
+# Line parameter: send_images_to_llm (categorical - each value = one line)
+LINE_PARAM = "send_images_to_llm"
+LINE_VALUES: list[bool] = [True, False]
 
-# X-axis parameter: LLM model (categorical - forms x-axis)
-X_PARAM = "llm_model"
-X_VALUES: list[str] = [
-    "openai/GPT-5-nano",
-    "openai/GPT-5-mini",
-    "openai/gpt-oss-120b",
-    "mistralai/mistral-large-2512",
-    "moonshotai/kimi-k2-thinking"
-]
+# X-axis parameter: top_k_images (numerical - forms x-axis)
+X_PARAM = "top_k_images"
+X_VALUES: list[int] = [0, 2, 4, 8]
 
 # Multiple runs per config (for std dev calculation)
 DEFAULT_NUM_RUNS = 3
@@ -79,7 +38,7 @@ DEFAULT_NUM_RUNS = 3
 # SHARED SETTINGS
 # ============================================================================
 
-OUTPUT_DIR = Path("outputs/sweeps/llm_model_vs_embedding")
+OUTPUT_DIR = Path("outputs/sweeps/send_images_vs_top_k_images")
 QUESTIONS = "data/train_QA.csv"
 METADATA = "data/metadata.csv"
 
@@ -88,11 +47,16 @@ with capture_globals() as ctx:
     questions = QUESTIONS
     metadata = METADATA
 
-    # LLM settings (model will be overridden per x-value)
-    llm_provider = (
-        "openai"  # we use openai lib with openrouter api here, which is more stable
-    )
-    model = "openai/gpt-oss-120b"
+    # Database/embedding settings (using jina v4 with images)
+    db = "artifacts/wattbot_jinav4.db"
+    table_prefix = "wattbot_jv4"
+    embedding_model = "jinav4"
+    embedding_dim = 512
+    embedding_task = "retrieval"
+
+    # LLM settings (use vision-capable model)
+    llm_provider = "openai"
+    model = "x-ai/grok-4.1-fast"
     planner_model = None
     openrouter_api_key = None
     site_url = "https://github.com/KohakuBlueleaf/KohakuRAG"
@@ -105,16 +69,11 @@ with capture_globals() as ctx:
     rerank_strategy = "combined"
     top_k_final = 32
 
-    # Embedding settings (will be overridden per config)
-    embedding_model = "jina"
-    embedding_dim = None
-    embedding_task = "retrieval"
-
     # Paragraph search mode
     paragraph_search_mode = "averaged"
 
-    # Image settings (will be overridden per config)
-    with_images = False
+    # Image settings (will be overridden per sweep point)
+    with_images = True
     top_k_images = 0
     send_images_to_llm = False
 
@@ -128,36 +87,28 @@ with capture_globals() as ctx:
     question_id = None
 
 
-def create_config(line_val: str, x_val: str, output_path: str) -> Config:
+def create_config(line_val: bool, x_val: int, output_path: str) -> Config:
     """Create config for a specific sweep point."""
     config = Config.from_context(ctx)
 
-    # Apply embedding-specific settings
-    emb_config = LINE_CONFIGS[line_val]
-    config.globals_dict["db"] = emb_config["db"]
-    config.globals_dict["table_prefix"] = emb_config["table_prefix"]
-    config.globals_dict["embedding_model"] = emb_config["embedding_model"]
-    config.globals_dict["embedding_dim"] = emb_config["embedding_dim"]
-    config.globals_dict["with_images"] = emb_config["with_images"]
-    config.globals_dict["top_k_images"] = emb_config["top_k_images"]
+    # Apply send_images_to_llm (line parameter)
+    config.globals_dict["send_images_to_llm"] = line_val
 
-    # Apply LLM model
-    config.globals_dict["model"] = x_val
+    # Apply top_k_images (x-axis parameter)
+    config.globals_dict["top_k_images"] = x_val
     config.globals_dict["output"] = output_path
     return config
 
 
-def make_filename(line_val: str, x_val: str, run_idx: int) -> str:
-    """Generate output filename for a sweep point.
-
-    Model names contain '/' so we replace with '_' for safe filenames.
-    """
-    safe_model = x_val.replace("/", "_")
-    return f"{LINE_PARAM}={line_val}_{X_PARAM}={safe_model}_run{run_idx}_preds.csv"
+def make_filename(line_val: bool, x_val: int, run_idx: int) -> str:
+    """Generate output filename for a sweep point."""
+    return f"{LINE_PARAM}={line_val}_{X_PARAM}={x_val}_run{run_idx}_preds.csv"
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Sweep: LLM Model vs Embedding Setup")
+    parser = argparse.ArgumentParser(
+        description="Sweep: send_images_to_llm vs top_k_images"
+    )
     parser.add_argument(
         "--num-runs",
         type=int,
@@ -179,31 +130,32 @@ if __name__ == "__main__":
     print(f"Total runs: {total_runs}")
     print(f"Output directory: {OUTPUT_DIR}")
     print("=" * 70)
-    print("\nEmbedding configurations:")
-    for name, cfg in LINE_CONFIGS.items():
-        print(
-            f"  {name}: db={cfg['db']}, emb={cfg['embedding_model']}, images={cfg['with_images']}"
-        )
-    print("\nLLM Models:")
-    for m in X_VALUES:
-        print(f"  {m}")
+    print("\nConfiguration:")
+    print(f"  send_images_to_llm (lines): {LINE_VALUES}")
+    print(f"  top_k_images (x-axis): {X_VALUES}")
+    print(f"  Model: {model}")
+    print(f"  Database: {db}")
     print("=" * 70)
 
     # Save sweep metadata
     sweep_metadata = {
         "line_param": LINE_PARAM,
         "line_values": LINE_VALUES,
-        "line_configs": LINE_CONFIGS,
         "x_param": X_PARAM,
         "x_values": X_VALUES,
         "num_runs": num_runs,
         "questions": QUESTIONS,
         "fixed_settings": {
+            "db": db,
+            "table_prefix": table_prefix,
+            "embedding_model": embedding_model,
+            "model": model,
             "top_k": top_k,
             "planner_max_queries": planner_max_queries,
             "deduplicate_retrieval": deduplicate_retrieval,
             "rerank_strategy": rerank_strategy,
             "top_k_final": top_k_final,
+            "with_images": with_images,
         },
     }
     with (OUTPUT_DIR / "metadata.json").open("w") as f:
@@ -222,16 +174,12 @@ if __name__ == "__main__":
                 print(f"[{run_count}/{total_runs}] Skipping (exists): {filename}")
                 continue
 
-            emb_cfg = LINE_CONFIGS[line_val]
             print(f"\n{'─' * 70}")
             print(
                 f"[{run_count}/{total_runs}] {LINE_PARAM}={line_val}, {X_PARAM}={x_val}, run={run_idx}"
             )
-            print(f"  db: {emb_cfg['db']}")
-            print(
-                f"  embedding: {emb_cfg['embedding_model']}, images: {emb_cfg['with_images']}"
-            )
-            print(f"  LLM: {x_val}")
+            print(f"  send_images_to_llm: {line_val}")
+            print(f"  top_k_images: {x_val}")
             print(f"  Output: {pred_path}")
             print(f"{'─' * 70}")
 
