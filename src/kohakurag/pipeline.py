@@ -298,6 +298,7 @@ class RAGPipeline:
         top_k_final: int | None = None,
         image_store: ImageStore | None = None,
         no_overlap: bool = False,
+        bm25_top_k: int = 0,
     ) -> None:
         """Initialize RAG pipeline with pluggable components.
 
@@ -319,6 +320,9 @@ class RAGPipeline:
             no_overlap: If True, remove overlapping snippets during context expansion.
                        When parent-child pairs exist, only keep the parent to avoid
                        redundant text in the context.
+            bm25_top_k: Number of additional results from BM25 sparse search (0 = disabled).
+                       These results are added to dense retrieval results for context expansion,
+                       NOT used for score fusion. This adds complementary keyword-matched content.
         """
         self._store = store or InMemoryNodeStore()
         self._embedder = embedder or JinaEmbeddingModel()
@@ -330,6 +334,7 @@ class RAGPipeline:
         self._top_k_final = top_k_final
         self._image_store = image_store
         self._no_overlap = no_overlap
+        self._bm25_top_k = bm25_top_k
 
     @property
     def store(self) -> HierarchicalNodeStore:
@@ -457,7 +462,7 @@ class RAGPipeline:
         return unique_matches
 
     async def retrieve(
-        self, question: str, *, top_k: int | None = None
+        self, question: str, *, top_k: int | None = None, bm25_top_k: int | None = None
     ) -> RetrievalResult:
         """Execute multi-query retrieval with hierarchical context expansion.
 
@@ -474,6 +479,9 @@ class RAGPipeline:
           ("frequency", "score", or "combined") with frequency + total_score
         - If top_k_final is set:
           Results are truncated to top_k_final after dedup+rerank
+        - If bm25_top_k > 0:
+          Additional BM25 results are appended after dense results for context expansion.
+          These are NOT fused with dense scores - they add complementary keyword matches.
 
         Example configurations:
         1. top_k=16, max_queries=3, deduplicate=False, rerank=None, top_k_final=None
@@ -485,9 +493,13 @@ class RAGPipeline:
         3. top_k=16, max_queries=3, deduplicate=True, rerank="frequency", top_k_final=20
            -> 20 results (best ranked by frequency + total score)
 
+        4. top_k=8, bm25_top_k=4, deduplicate=True
+           -> dense results (up to 8 per query) + additional BM25 results (up to 4)
+
         Args:
             question: User question
             top_k: Number of results per query (uses default if None)
+            bm25_top_k: Number of additional BM25 results (uses default if None)
 
         Returns:
             RetrievalResult with matches and expanded snippets
@@ -500,8 +512,9 @@ class RAGPipeline:
         # Embed all queries
         query_vectors = await self._embedder.embed(queries)
         k = top_k or self._top_k
+        bm25_k = bm25_top_k if bm25_top_k is not None else self._bm25_top_k
 
-        # Execute each query independently
+        # Execute each query independently (dense search)
         all_matches: list[RetrievalMatch] = []
         for vector in query_vectors:
             matches = await self._store.search(
@@ -526,6 +539,32 @@ class RAGPipeline:
         # Apply top_k_final truncation if configured
         if self._top_k_final is not None and self._top_k_final > 0:
             all_matches = all_matches[: self._top_k_final]
+
+        # Add BM25 results for additional context (not fused, just appended)
+        if bm25_k > 0 and hasattr(self._store, "search_bm25"):
+            # Collect node_ids already in dense results
+            dense_node_ids = {m.node.node_id for m in all_matches}
+
+            # Search BM25 for each query
+            bm25_matches: list[RetrievalMatch] = []
+            for query in queries:
+                matches = await self._store.search_bm25(
+                    query,
+                    k=bm25_k,
+                    kinds={NodeKind.SENTENCE, NodeKind.PARAGRAPH},
+                )
+                bm25_matches.extend(matches)
+
+            # Deduplicate BM25 results and exclude nodes already in dense results
+            seen_bm25_ids: set[str] = set()
+            for match in bm25_matches:
+                node_id = match.node.node_id
+                if node_id not in dense_node_ids and node_id not in seen_bm25_ids:
+                    seen_bm25_ids.add(node_id)
+                    all_matches.append(match)
+                    # Stop if we've added enough BM25 results
+                    if len(seen_bm25_ids) >= bm25_k:
+                        break
 
         # Expand each match with hierarchical context
         snippets = await matches_to_snippets(
@@ -594,7 +633,12 @@ class RAGPipeline:
         return image_nodes
 
     async def retrieve_with_images(
-        self, question: str, *, top_k: int | None = None, top_k_images: int = 0
+        self,
+        question: str,
+        *,
+        top_k: int | None = None,
+        top_k_images: int = 0,
+        bm25_top_k: int | None = None,
     ) -> RetrievalResult:
         """Execute multi-query retrieval with image extraction.
 
@@ -608,6 +652,7 @@ class RAGPipeline:
             top_k: Number of text results per query (uses default if None)
             top_k_images: Number of ADDITIONAL images from image-only index
                          (0 = only extract from sections, >0 = also search image index)
+            bm25_top_k: Number of additional BM25 results (uses default if None)
 
         Returns:
             RetrievalResult with separate image sources:
@@ -615,8 +660,8 @@ class RAGPipeline:
             - images_from_vision: Images from image search (send as actual images)
             - image_nodes: Combined for backward compatibility
         """
-        # Standard text retrieval
-        result = await self.retrieve(question, top_k=top_k)
+        # Standard text retrieval (with BM25 if configured)
+        result = await self.retrieve(question, top_k=top_k, bm25_top_k=bm25_top_k)
 
         # Images from text retrieval sections (captions only)
         images_from_sections = await self._extract_images_from_snippets(result.snippets)
@@ -712,6 +757,7 @@ class RAGPipeline:
         top_k_images: int = 0,
         top_k_final: int | None = None,
         send_images_to_llm: bool = False,
+        bm25_top_k: int | None = None,
     ) -> StructuredAnswerResult:
         """QA with custom prompt template and structured JSON parsing.
 
@@ -724,6 +770,7 @@ class RAGPipeline:
             top_k_final: Optional override for final result truncation
             send_images_to_llm: If True and image_store is set, send actual images
                                to vision-capable LLMs instead of just captions
+            bm25_top_k: Number of additional BM25 results (uses default if None)
 
         Returns:
             Complete structured answer result
@@ -737,10 +784,15 @@ class RAGPipeline:
             # Use image-aware retrieval if requested
             if with_images:
                 retrieval = await self.retrieve_with_images(
-                    question, top_k=top_k, top_k_images=top_k_images
+                    question,
+                    top_k=top_k,
+                    top_k_images=top_k_images,
+                    bm25_top_k=bm25_top_k,
                 )
             else:
-                retrieval = await self.retrieve(question, top_k=top_k)
+                retrieval = await self.retrieve(
+                    question, top_k=top_k, bm25_top_k=bm25_top_k
+                )
         finally:
             # Restore original top_k_final
             self._top_k_final = original_top_k_final
@@ -789,6 +841,7 @@ class RAGPipeline:
         top_k_images: int = 0,
         top_k_final: int | None = None,
         send_images_to_llm: bool = False,
+        bm25_top_k: int | None = None,
     ) -> StructuredAnswerResult:
         """High-level entry point for structured question answering.
 
@@ -806,6 +859,7 @@ class RAGPipeline:
             top_k_images: Number of images from image-only index (requires wattbot_build_image_index.py)
             top_k_final: Optional override for final result truncation
             send_images_to_llm: If True, send actual images to vision-capable LLMs
+            bm25_top_k: Number of additional BM25 results (uses pipeline default if None)
 
         Returns:
             Structured answer result
@@ -823,6 +877,7 @@ class RAGPipeline:
             top_k_images=top_k_images,
             top_k_final=top_k_final,
             send_images_to_llm=send_images_to_llm,
+            bm25_top_k=bm25_top_k,
         )
 
     def _build_prompt(

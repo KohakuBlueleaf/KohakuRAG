@@ -363,12 +363,23 @@ class OpenRouterChatModel(ChatModel):
                         "remotprotocolerror",
                     ]
                 )
+                # Check for provider errors (OpenRouter ChatError, etc.)
+                is_provider_error = (
+                    "provider" in error_str
+                    or "chaterror" in error_str
+                    or "returned error" in error_str
+                )
 
                 # Validation errors often mean API returned error response instead of success
                 if is_validation_error and "error" in error_str:
                     is_server_error = True  # Treat as retryable
 
-                is_retryable = is_rate_limit or is_server_error or is_connection_error
+                is_retryable = (
+                    is_rate_limit
+                    or is_server_error
+                    or is_connection_error
+                    or is_provider_error
+                )
 
                 if not is_retryable or attempt >= self._max_retries:
                     raise  # Not retryable or exhausted retries
@@ -384,6 +395,8 @@ class OpenRouterChatModel(ChatModel):
                     error_type = "Connection error (peer closed)"
                 elif is_validation_error:
                     error_type = "API error (validation failure)"
+                elif is_provider_error:
+                    error_type = "Provider error"
                 else:
                     error_type = "Transient error"
 
@@ -396,8 +409,7 @@ class OpenRouterChatModel(ChatModel):
 
                 print(
                     f"OpenRouter {error_type} (attempt {attempt + 1}/{self._max_retries + 1}). "
-                    f"Waiting {wait_time:.2f}s before retry...\n"
-                    f"Error: {error_str}\n"
+                    f"Retrying in {wait_time:.1f}s..."
                 )
                 await asyncio.sleep(wait_time)
 

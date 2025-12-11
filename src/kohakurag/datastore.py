@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal, Sequence
 
 import numpy as np
-from kohakuvault import KVault, VectorKVault
+from kohakuvault import KVault, TextVault, VectorKVault
 
 from .types import ContextSnippet, NodeKind, RetrievalMatch, StoredNode
 
@@ -293,6 +293,15 @@ class KVaultNodeStore(HierarchicalNodeStore):
             self._image_vectors.enable_auto_pack()
         except Exception:
             # Image-only table doesn't exist - that's fine, it's optional
+            pass
+
+        # Optional: BM25 (FTS5) text search table (created by wattbot_build_bm25_index.py)
+        self._bm25: TextVault | None = None
+        try:
+            self._bm25 = TextVault(self._path, table=f"{table_prefix}_bm25")
+            self._bm25.enable_auto_pack()
+        except Exception:
+            # BM25 table doesn't exist - that's fine, it's optional
             pass
 
         # Single-worker executor for thread-safe async SQLite operations
@@ -594,6 +603,80 @@ class KVaultNodeStore(HierarchicalNodeStore):
             mode: "averaged" or "full"
         """
         self._paragraph_search_mode = mode
+
+    def has_bm25_index(self) -> bool:
+        """Check if BM25 (FTS5) text search table exists."""
+        return self._bm25 is not None
+
+    def _sync_search_bm25(
+        self,
+        query: str,
+        k: int,
+        kinds: set[NodeKind] | None,
+    ) -> list[RetrievalMatch]:
+        """Synchronous BM25 search logic (called via executor).
+
+        Args:
+            query: Text query for FTS5 search
+            k: Number of results to return
+            kinds: Optional filter for node types
+
+        Returns:
+            List of retrieval matches sorted by BM25 score
+        """
+        if self._bm25 is None:
+            return []
+
+        # Search TextVault - returns list of (id, bm25_score, value)
+        # where value is the node_id we stored
+        results = self._bm25.search(query, k=k * 2)  # Fetch extra for filtering
+
+        matches: list[RetrievalMatch] = []
+        for row_id, bm25_score, node_id in results:
+            try:
+                node = self._sync_get_node(node_id)
+
+                # Filter by node type if specified
+                if kinds is not None and node.kind not in kinds:
+                    continue
+
+                # BM25 scores are negative (lower is better), convert to similarity
+                # Typical BM25 scores range from -20 to 0, normalize to 0-1 range
+                score = max(0.0, min(1.0, (bm25_score + 20) / 20))
+                matches.append(RetrievalMatch(node=node, score=score))
+
+                if len(matches) >= k:
+                    break
+
+            except Exception:
+                continue
+
+        return matches
+
+    async def search_bm25(
+        self,
+        query: str,
+        *,
+        k: int = 5,
+        kinds: set[NodeKind] | None = None,
+    ) -> list[RetrievalMatch]:
+        """BM25 (FTS5) text search for sparse retrieval.
+
+        This requires the BM25 index to be built first via
+        wattbot_build_bm25_index.py. If the table doesn't exist, returns empty list.
+
+        Args:
+            query: Text query for BM25 search
+            k: Number of results to return
+            kinds: Optional filter for node types
+
+        Returns:
+            List of retrieval matches (sorted by BM25 score)
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor, self._sync_search_bm25, query, k, kinds
+        )
 
     def _sync_get_context(
         self,
