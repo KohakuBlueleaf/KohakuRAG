@@ -198,29 +198,63 @@ class KVaultNodeStore(HierarchicalNodeStore):
         self._kv = KVault(self._path, table=f"{table_prefix}_kv")
         self._kv.enable_auto_pack()
 
-        # Validate or infer dimensions
+        # Validate or infer dimensions from stored metadata
         stored_meta = self._kv.get(self.META_KEY, None)
-        if dimensions is None:
-            if stored_meta is None:
-                raise ValueError(
-                    "Embedding dimension required for new store. Pass dimensions=... "
-                    "when creating the index."
+        inferred_dimensions: int | None = None
+
+        if stored_meta is not None:
+            inferred_dimensions = int(stored_meta.get("dimensions"))
+            inferred_metric = stored_meta.get("metric", metric)
+            if inferred_metric != metric:
+                metric = inferred_metric  # Use stored metric
+
+        # If dimensions not provided and not in metadata, try to infer from vector table
+        if dimensions is None and inferred_dimensions is None:
+            try:
+                # Try opening existing vector table to get dimensions
+                existing_vectors = VectorKVault(
+                    self._path,
+                    table=f"{table_prefix}_vec",
+                    dimensions=1,  # Dummy, will be overwritten
+                    metric=metric,
                 )
-            dimensions = int(stored_meta.get("dimensions"))
+                info = existing_vectors.info()
+                if info.get("count", 0) > 0:
+                    inferred_dimensions = int(info.get("dimensions", 0))
+                    if inferred_dimensions > 0:
+                        # Update metadata with inferred dimensions
+                        self._kv[self.META_KEY] = {
+                            "dimensions": inferred_dimensions,
+                            "metric": metric,
+                        }
+            except Exception:
+                pass
 
-        self._dimensions = int(dimensions)
-
-        # Check dimension consistency with existing store
-        if (
-            stored_meta
-            and int(stored_meta.get("dimensions", self._dimensions)) != self._dimensions
-        ):
+        # Determine final dimensions
+        if dimensions is not None:
+            final_dimensions = dimensions
+        elif inferred_dimensions is not None:
+            final_dimensions = inferred_dimensions
+        else:
             raise ValueError(
-                f"Existing store was built with dimension {stored_meta['dimensions']}, "
-                f"but {self._dimensions} was requested."
+                "Embedding dimension required for new store. Pass dimensions=... "
+                "when creating the index."
             )
 
-        # Store metadata
+        self._dimensions = int(final_dimensions)
+
+        # Check dimension consistency if both provided and stored
+        if (
+            dimensions is not None
+            and inferred_dimensions is not None
+            and dimensions != inferred_dimensions
+        ):
+            raise ValueError(
+                f"Existing store was built with dimension {inferred_dimensions}, "
+                f"but {dimensions} was requested."
+            )
+
+        # Store/update metadata
         self._kv[self.META_KEY] = {"dimensions": self._dimensions, "metric": metric}
 
         # Open vector table (main embeddings - averaged for paragraphs)
@@ -895,9 +929,15 @@ class ImageStore:
         # KohakuVault doesn't have a native prefix scan, so we scan all keys
         # This is acceptable since image counts are typically small
         all_keys = []
+        prefix_bytes = prefix.encode() if isinstance(prefix, str) else prefix
         for key in self._kv.keys():
-            if key.startswith(prefix):
-                all_keys.append(key)
+            # Handle both str and bytes keys from KohakuVault
+            if isinstance(key, bytes):
+                if key.startswith(prefix_bytes):
+                    all_keys.append(key.decode())
+            else:
+                if key.startswith(prefix):
+                    all_keys.append(key)
         return all_keys
 
     async def list_images(self, prefix: str = "img:") -> list[str]:
