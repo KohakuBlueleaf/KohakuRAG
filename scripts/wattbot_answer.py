@@ -138,6 +138,10 @@ top_k_images = 0
 # Vision support: send actual images to vision-capable LLMs
 send_images_to_llm = False
 
+# BM25 sparse search: additional results from FTS5 (0 = disabled)
+# These are added to dense retrieval, NOT fused with scores
+bm25_top_k = 0
+
 # Prompt ordering: if True, use reordered prompt (context before question)
 use_reordered_prompt = False
 
@@ -557,6 +561,7 @@ def create_pipeline() -> RAGPipeline:
         top_k_final=top_k_final,
         image_store=image_store,
         no_overlap=no_overlap,
+        bm25_top_k=bm25_top_k,
     )
 
     return pipeline

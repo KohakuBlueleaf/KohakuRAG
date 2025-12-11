@@ -7,6 +7,10 @@ Output: artifacts/wattbot_text_only.db
 
 Usage:
     python workflows/indexing/jina_v3_text_only.py
+
+Migration (add BM25 to existing index):
+    If you already have an index without BM25, you can add it by running:
+    python scripts/wattbot_build_bm25_index.py --db artifacts/wattbot_text_only.db --table-prefix wattbot_text
 """
 
 from kohakuengine import Config, Script, capture_globals
@@ -32,6 +36,9 @@ with capture_globals() as ctx:
     # Options: "averaged", "full", "both"
     paragraph_embedding_mode = "both"
 
+    # BM25 sparse search index (optional, for hybrid retrieval)
+    build_bm25_index = True
+
 
 if __name__ == "__main__":
     print("=" * 70)
@@ -42,16 +49,29 @@ if __name__ == "__main__":
     print(f"Table prefix: {table_prefix}")
     print(f"Embedding: {embedding_model}")
     print(f"Paragraph mode: {paragraph_embedding_mode}")
+    print(f"Build BM25: {build_bm25_index}")
     print("=" * 70)
 
-    # Build index
-    print("\n[1/1] Building index...")
+    # Step 1: Build dense vector index
+    print("\n[1/2] Building dense vector index...")
     index_config = Config.from_context(ctx)
     index_script = Script("scripts/wattbot_build_index.py", config=index_config)
     index_script.run()
+
+    # Step 2: Build BM25 sparse index (optional)
+    if build_bm25_index:
+        print("\n[2/2] Building BM25 sparse index...")
+        bm25_config = Config.from_context(ctx)
+        bm25_script = Script("scripts/wattbot_build_bm25_index.py", config=bm25_config)
+        bm25_script.run()
+    else:
+        print("\n[2/2] Skipping BM25 index (disabled)")
 
     print("\n" + "=" * 70)
     print("Indexing Complete!")
     print("=" * 70)
     print(f"Database: {db}")
+    print(f"- Dense index: {table_prefix}_vec")
+    if build_bm25_index:
+        print(f"- BM25 index: {table_prefix}_bm25")
     print("=" * 70)

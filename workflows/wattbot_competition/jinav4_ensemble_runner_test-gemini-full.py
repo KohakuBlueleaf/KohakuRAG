@@ -18,8 +18,8 @@ QUESTIONS = "data/test_Q.csv"
 METADATA = "data/metadata.csv"
 
 MODEL = "google/gemini-3-pro-preview"
-OUTPUT_DIR = Path("outputs/gemini3pro-2")
-NUM_RUNS = 3
+OUTPUT_DIR = Path("outputs/gemini3pro")
+NUM_RUNS = 1
 
 # Models to run in parallel
 MODELS = [
@@ -54,6 +54,7 @@ with capture_globals() as ctx:
 
     # Retrieval settings
     top_k = 16
+    bm25_top_k = 4
     planner_max_queries = 4
     deduplicate_retrieval = True
     rerank_strategy = "combined"

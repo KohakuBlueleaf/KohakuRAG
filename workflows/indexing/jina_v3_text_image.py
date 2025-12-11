@@ -7,6 +7,10 @@ Output: artifacts/wattbot_with_images.db
 
 Usage:
     python workflows/indexing/jina_v3_text_image.py
+
+Migration (add BM25 to existing index):
+    If you already have an index without BM25, you can add it by running:
+    python scripts/wattbot_build_bm25_index.py --db artifacts/wattbot_with_images.db --table-prefix wattbot_img
 """
 
 from kohakuengine import Config, Script, capture_globals
@@ -32,6 +36,9 @@ with capture_globals() as ctx:
     # Options: "averaged", "full", "both"
     paragraph_embedding_mode = "both"
 
+    # BM25 sparse search index (optional, for hybrid retrieval)
+    build_bm25_index = True
+
 
 if __name__ == "__main__":
     print("=" * 70)
@@ -42,26 +49,38 @@ if __name__ == "__main__":
     print(f"Table prefix: {table_prefix}")
     print(f"Embedding: {embedding_model}")
     print(f"Paragraph mode: {paragraph_embedding_mode}")
+    print(f"Build BM25: {build_bm25_index}")
     print("=" * 70)
 
-    # Step 1: Build text index
-    print("\n[1/2] Building text index...")
+    # Step 1: Build dense vector index
+    print("\n[1/3] Building dense vector index...")
     index_config = Config.from_context(ctx)
     index_script = Script("scripts/wattbot_build_index.py", config=index_config)
     index_script.run()
 
     # Step 2: Build image-only index
-    print("\n[2/2] Building image-only index...")
+    print("\n[2/3] Building image-only index...")
     image_index_config = Config.from_context(ctx)
     image_index_script = Script(
         "scripts/wattbot_build_image_index.py", config=image_index_config
     )
     image_index_script.run()
 
+    # Step 3: Build BM25 sparse index (optional)
+    if build_bm25_index:
+        print("\n[3/3] Building BM25 sparse index...")
+        bm25_config = Config.from_context(ctx)
+        bm25_script = Script("scripts/wattbot_build_bm25_index.py", config=bm25_config)
+        bm25_script.run()
+    else:
+        print("\n[3/3] Skipping BM25 index (disabled)")
+
     print("\n" + "=" * 70)
     print("Indexing Complete!")
     print("=" * 70)
     print(f"Database: {db}")
-    print(f"- Text index: {table_prefix}_vectors")
+    print(f"- Dense index: {table_prefix}_vec")
     print(f"- Image index: {table_prefix}_images_vec")
+    if build_bm25_index:
+        print(f"- BM25 index: {table_prefix}_bm25")
     print("=" * 70)
