@@ -75,11 +75,11 @@ async def main() -> None:
 
     # Try to access image store to count compressed images
     try:
-        image_store = ImageStore(args.db, table="image_blobs")
+        image_store = ImageStore(db, table="image_blobs")
         image_keys = await image_store.list_images(prefix="img:")
         print(f"  Compressed image blobs: {len(image_keys)}")
-    except Exception:
-        print(f"  Compressed image blobs: 0 (no image_blobs table)")
+    except Exception as e:
+        print(f"  Compressed image blobs: 0 (error: {e})")
 
 
 if __name__ == "__main__":

@@ -2,8 +2,8 @@
 
 from kohakuengine import Config
 
-db = "artifacts/wattbot.db"
-table_prefix = "wattbot"
+db = "artifacts/wattbot_jinav4.db"
+table_prefix = "wattbot_jv4"
 
 
 def config_gen():
