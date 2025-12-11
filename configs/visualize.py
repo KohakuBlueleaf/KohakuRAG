@@ -20,9 +20,9 @@ max_samples = None
 # Hierarchical sampling: sample based on tree structure
 # Set hierarchical_sampling = True to enable
 hierarchical_sampling = True
-samples_per_document = 8    # Sections per document (None = all)
-samples_per_section = 8     # Paragraphs per section (None = all)
-samples_per_paragraph = 8   # Sentences per paragraph (None = all)
+samples_per_document = 8  # Sections per document (None = all)
+samples_per_section = 8  # Paragraphs per section (None = all)
+samples_per_paragraph = 8  # Sentences per paragraph (None = all)
 
 # t-SNE parameters
 perplexity = 30

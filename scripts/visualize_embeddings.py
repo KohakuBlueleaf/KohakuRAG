@@ -70,9 +70,9 @@ max_samples: int | None = 500
 # Hierarchical sampling: sample based on tree structure
 # Set hierarchical_sampling = True to enable
 hierarchical_sampling = False
-samples_per_document: int | None = 3    # Sections per document (None = all)
-samples_per_section: int | None = 3     # Paragraphs per section (None = all)
-samples_per_paragraph: int | None = 3   # Sentences per paragraph (None = all)
+samples_per_document: int | None = 3  # Sections per document (None = all)
+samples_per_section: int | None = 3  # Paragraphs per section (None = all)
+samples_per_paragraph: int | None = 3  # Sentences per paragraph (None = all)
 
 # t-SNE parameters
 perplexity = 30
@@ -103,21 +103,21 @@ axis_percentile: float | None = 99
 # ============================================================================
 
 TYPE_COLORS = {
-    "document": "#e41a1c",      # Red
-    "section": "#377eb8",       # Blue
-    "paragraph_avg": "#4daf4a", # Green
-    "paragraph_full": "#984ea3", # Purple
-    "sentence": "#ff7f00",      # Orange
-    "image": "#a65628",         # Brown
+    "document": "#e41a1c",  # Red
+    "section": "#377eb8",  # Blue
+    "paragraph_avg": "#4daf4a",  # Green
+    "paragraph_full": "#984ea3",  # Purple
+    "sentence": "#ff7f00",  # Orange
+    "image": "#a65628",  # Brown
 }
 
 TYPE_MARKERS = {
-    "document": "p",      # Pentagon
-    "section": "^",       # Triangle up
-    "paragraph_avg": "o", # Circle
-    "paragraph_full": "D", # Diamond
-    "sentence": "s",      # Square
-    "image": "*",         # Star
+    "document": "p",  # Pentagon
+    "section": "^",  # Triangle up
+    "paragraph_avg": "o",  # Circle
+    "paragraph_full": "D",  # Diamond
+    "sentence": "s",  # Square
+    "image": "*",  # Star
 }
 
 
@@ -191,7 +191,9 @@ async def collect_embeddings_hierarchical(
     print(f"  Sentences per paragraph: {samples_per_paragraph or 'all'}")
 
     # First pass: collect all nodes and build tree structure
-    documents: dict[str, dict] = {}  # doc_id -> {node, sections: {sec_id -> {node, paragraphs: ...}}}
+    documents: dict[str, dict] = (
+        {}
+    )  # doc_id -> {node, sections: {sec_id -> {node, paragraphs: ...}}}
 
     for row_id in range(1, total_entries + 1):
         try:
@@ -204,7 +206,11 @@ async def collect_embeddings_hierarchical(
 
             if node.kind == NodeKind.DOCUMENT:
                 if node_id not in documents:
-                    documents[node_id] = {"node": node, "vector": vector_arr, "sections": {}}
+                    documents[node_id] = {
+                        "node": node,
+                        "vector": vector_arr,
+                        "sections": {},
+                    }
                 else:
                     documents[node_id]["node"] = node
                     documents[node_id]["vector"] = vector_arr
@@ -215,7 +221,9 @@ async def collect_embeddings_hierarchical(
                     documents[doc_id] = {"node": None, "vector": None, "sections": {}}
                 if node_id not in documents[doc_id]["sections"]:
                     documents[doc_id]["sections"][node_id] = {
-                        "node": node, "vector": vector_arr, "paragraphs": {}
+                        "node": node,
+                        "vector": vector_arr,
+                        "paragraphs": {},
                     }
                 else:
                     documents[doc_id]["sections"][node_id]["node"] = node
@@ -234,15 +242,23 @@ async def collect_embeddings_hierarchical(
                     documents[doc_id] = {"node": None, "vector": None, "sections": {}}
                 if sec_id not in documents[doc_id]["sections"]:
                     documents[doc_id]["sections"][sec_id] = {
-                        "node": None, "vector": None, "paragraphs": {}
+                        "node": None,
+                        "vector": None,
+                        "paragraphs": {},
                     }
                 if node_id not in documents[doc_id]["sections"][sec_id]["paragraphs"]:
                     documents[doc_id]["sections"][sec_id]["paragraphs"][node_id] = {
-                        "node": node, "vector": vector_arr, "sentences": []
+                        "node": node,
+                        "vector": vector_arr,
+                        "sentences": [],
                     }
                 else:
-                    documents[doc_id]["sections"][sec_id]["paragraphs"][node_id]["node"] = node
-                    documents[doc_id]["sections"][sec_id]["paragraphs"][node_id]["vector"] = vector_arr
+                    documents[doc_id]["sections"][sec_id]["paragraphs"][node_id][
+                        "node"
+                    ] = node
+                    documents[doc_id]["sections"][sec_id]["paragraphs"][node_id][
+                        "vector"
+                    ] = vector_arr
 
             elif node.kind == NodeKind.SENTENCE:
                 # Parse node_id: doc:sec:p:s
@@ -258,15 +274,19 @@ async def collect_embeddings_hierarchical(
                     documents[doc_id] = {"node": None, "vector": None, "sections": {}}
                 if sec_id not in documents[doc_id]["sections"]:
                     documents[doc_id]["sections"][sec_id] = {
-                        "node": None, "vector": None, "paragraphs": {}
+                        "node": None,
+                        "vector": None,
+                        "paragraphs": {},
                     }
                 if para_id not in documents[doc_id]["sections"][sec_id]["paragraphs"]:
                     documents[doc_id]["sections"][sec_id]["paragraphs"][para_id] = {
-                        "node": None, "vector": None, "sentences": []
+                        "node": None,
+                        "vector": None,
+                        "sentences": [],
                     }
-                documents[doc_id]["sections"][sec_id]["paragraphs"][para_id]["sentences"].append({
-                    "node": node, "vector": vector_arr, "node_id": node_id
-                })
+                documents[doc_id]["sections"][sec_id]["paragraphs"][para_id][
+                    "sentences"
+                ].append({"node": node, "vector": vector_arr, "node_id": node_id})
 
         except Exception:
             continue
@@ -301,7 +321,9 @@ async def collect_embeddings_hierarchical(
 
                 # Add paragraph (check if image)
                 if para_data["node"] is not None and para_data["vector"] is not None:
-                    is_image = para_data["node"].metadata.get("attachment_type") == "image"
+                    is_image = (
+                        para_data["node"].metadata.get("attachment_type") == "image"
+                    )
                     if is_image and "image" in types_to_collect:
                         embeddings["image"].append(para_data["vector"])
                         doc_ids_per_type["image"].append(doc_id)
@@ -313,11 +335,17 @@ async def collect_embeddings_hierarchical(
 
                 # Sample sentences
                 sentences = para_data["sentences"]
-                if samples_per_paragraph is not None and len(sentences) > samples_per_paragraph:
+                if (
+                    samples_per_paragraph is not None
+                    and len(sentences) > samples_per_paragraph
+                ):
                     sentences = random.sample(sentences, samples_per_paragraph)
 
                 for sent_data in sentences:
-                    if "sentence" in types_to_collect and sent_data["vector"] is not None:
+                    if (
+                        "sentence" in types_to_collect
+                        and sent_data["vector"] is not None
+                    ):
                         embeddings["sentence"].append(sent_data["vector"])
                         doc_ids_per_type["sentence"].append(doc_id)
 
@@ -325,7 +353,9 @@ async def collect_embeddings_hierarchical(
     if "paragraph_full" in types_to_collect and store.has_full_paragraph_index():
         para_info = store._para_full_vectors.info()
         para_count = para_info.get("count", 0)
-        print(f"Collecting full paragraph embeddings for {len(node_ids_collected.get('paragraph_avg', set()))} sampled paragraphs...")
+        print(
+            f"Collecting full paragraph embeddings for {len(node_ids_collected.get('paragraph_avg', set()))} sampled paragraphs..."
+        )
 
         for row_id in range(1, para_count + 1):
             try:
@@ -334,7 +364,9 @@ async def collect_embeddings_hierarchical(
                     node_id = node_id.decode()
                 # Only include if the paragraph was sampled
                 if node_id in node_ids_collected.get("paragraph_avg", set()):
-                    embeddings["paragraph_full"].append(np.array(vector, dtype=np.float32))
+                    embeddings["paragraph_full"].append(
+                        np.array(vector, dtype=np.float32)
+                    )
                     doc_ids_per_type["paragraph_full"].append(para_to_doc[node_id])
             except Exception:
                 continue
@@ -377,7 +409,9 @@ async def collect_embeddings_flat(
     info = store._vectors.info()
     total_entries = info.get("count", 0)
 
-    print(f"Scanning {total_entries} vectors (flat sampling, max {max_samples or 'unlimited'} per type)...")
+    print(
+        f"Scanning {total_entries} vectors (flat sampling, max {max_samples or 'unlimited'} per type)..."
+    )
 
     # Collect from main vector table
     for row_id in range(1, total_entries + 1):
@@ -423,7 +457,10 @@ async def collect_embeddings_flat(
                 vector, node_id = store._para_full_vectors.get_by_id(row_id)
                 vector_arr = np.array(vector, dtype=np.float32)
 
-                if max_samples is None or len(embeddings["paragraph_full"]) < max_samples:
+                if (
+                    max_samples is None
+                    or len(embeddings["paragraph_full"]) < max_samples
+                ):
                     embeddings["paragraph_full"].append(vector_arr)
             except Exception:
                 continue
@@ -472,7 +509,9 @@ def reduce_dimensions(
         start_idx += len(vecs)
 
     combined = np.vstack(all_vecs)
-    print(f"\nReducing {combined.shape[0]} embeddings from {combined.shape[1]}D to 2D using {method.upper()}...")
+    print(
+        f"\nReducing {combined.shape[0]} embeddings from {combined.shape[1]}D to 2D using {method.upper()}..."
+    )
 
     if method == "pca":
         reducer = PCA(n_components=2, random_state=random_state)
@@ -496,7 +535,9 @@ def reduce_dimensions(
         try:
             import umap
         except ImportError:
-            raise ImportError("UMAP requires 'umap-learn' package. Install with: pip install umap-learn")
+            raise ImportError(
+                "UMAP requires 'umap-learn' package. Install with: pip install umap-learn"
+            )
 
         # Note: random_state=None enables parallelism in UMAP
         reducer = umap.UMAP(
@@ -546,6 +587,7 @@ def _get_doc_colors(doc_ids: list[str]) -> dict[str, tuple]:
         # For many documents, use HSV but with reduced lightness
         # Generate colors in HSV space with lower value (darker)
         import colorsys
+
         colors = {}
         for i, doc in enumerate(unique_docs):
             hue = i / n_docs
@@ -639,7 +681,8 @@ def plot_embeddings(
                     docs_in_legend.add(doc_id)
 
                 ax.scatter(
-                    [x], [y],
+                    [x],
+                    [y],
                     c=[color],
                     marker=marker,
                     s=size,
@@ -675,7 +718,9 @@ def plot_embeddings(
         from matplotlib.lines import Line2D
 
         # Document legend (existing scatter handles)
-        doc_legend = ax.legend(loc="upper left", framealpha=0.9, fontsize=7, title="Documents")
+        doc_legend = ax.legend(
+            loc="upper left", framealpha=0.9, fontsize=7, title="Documents"
+        )
         ax.add_artist(doc_legend)
 
         # Shape legend for node types
@@ -683,7 +728,8 @@ def plot_embeddings(
         for type_name in reduced.keys():
             marker = TYPE_MARKERS.get(type_name, "o")
             handle = Line2D(
-                [0], [0],
+                [0],
+                [0],
                 marker=marker,
                 color="gray",
                 markerfacecolor="gray",
@@ -745,7 +791,9 @@ async def main() -> None:
             seed=random_state,
         )
     else:
-        embeddings, doc_ids = await collect_embeddings_flat(store, show_types, max_samples)
+        embeddings, doc_ids = await collect_embeddings_flat(
+            store, show_types, max_samples
+        )
 
     if not embeddings:
         print("No embeddings found!")
@@ -758,14 +806,21 @@ async def main() -> None:
         perplexity=perplexity,
         n_neighbors=n_neighbors,
         min_dist=min_dist,
-        random_state=random_state if method != "umap" else None,  # None for UMAP parallelism
+        random_state=(
+            random_state if method != "umap" else None
+        ),  # None for UMAP parallelism
         n_jobs=n_jobs,
     )
 
     # Plot
     plot_embeddings(
-        reduced, method, output, figsize,
-        doc_ids=doc_ids, color_mode=color_mode, axis_percentile=axis_percentile
+        reduced,
+        method,
+        output,
+        figsize,
+        doc_ids=doc_ids,
+        color_mode=color_mode,
+        axis_percentile=axis_percentile,
     )
 
 

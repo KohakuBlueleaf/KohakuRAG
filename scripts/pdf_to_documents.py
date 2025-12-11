@@ -45,9 +45,9 @@ min_image_size: int = 50  # Minimum width/height to extract embedded images
 def _sanitize_filename(name: str) -> str:
     """Sanitize a string for use as filename."""
     # Remove or replace invalid characters
-    name = re.sub(r'[<>:"/\\|?*]', '_', name)
-    name = re.sub(r'\s+', '_', name)
-    name = name.strip('._')
+    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    name = re.sub(r"\s+", "_", name)
+    name = name.strip("._")
     return name[:100] if name else "image"
 
 
@@ -55,6 +55,7 @@ def _save_pixmap(pix: fitz.Pixmap, output_path: Path, fmt: str) -> None:
     """Save pixmap to file with format handling."""
     if fmt == "webp":
         from PIL import Image
+
         if pix.alpha:
             img = Image.frombytes("RGBA", [pix.width, pix.height], pix.samples)
         else:
@@ -128,6 +129,7 @@ def _extract_embedded_images(
                     # Convert format
                     from PIL import Image
                     import io
+
                     img = Image.open(io.BytesIO(image_bytes))
                     if fmt == "jpg" and img.mode in ("RGBA", "P"):
                         img = img.convert("RGB")
@@ -264,7 +266,9 @@ def main() -> None:
     image_map: dict[tuple[int, int], str] = {}
     if extract_images:
         print("\nExtracting embedded images...")
-        image_map = _extract_embedded_images(doc, images_dir, image_format, min_image_size)
+        image_map = _extract_embedded_images(
+            doc, images_dir, image_format, min_image_size
+        )
         print(f"Extracted {len(set(image_map.values()))} unique images")
 
     # Render page images

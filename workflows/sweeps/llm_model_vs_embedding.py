@@ -69,7 +69,7 @@ X_VALUES: list[str] = [
     "openai/GPT-5-mini",
     "openai/gpt-oss-120b",
     "mistralai/mistral-large-2512",
-    "moonshotai/kimi-k2-thinking"
+    "moonshotai/kimi-k2-thinking",
 ]
 
 # Multiple runs per config (for std dev calculation)

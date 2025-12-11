@@ -777,7 +777,9 @@ async def matches_to_snippets(
     return snippets
 
 
-def _remove_overlapping_snippets(snippets: list[ContextSnippet]) -> list[ContextSnippet]:
+def _remove_overlapping_snippets(
+    snippets: list[ContextSnippet],
+) -> list[ContextSnippet]:
     """Remove overlapping snippets by keeping only the largest (parent) nodes.
 
     When a parent and child node both exist in snippets, the child's text is
