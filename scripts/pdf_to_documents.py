@@ -81,6 +81,9 @@ def _extract_embedded_images(
     Returns:
         Dict mapping (xref, page_num) to image filename
     """
+    from PIL import Image
+    import io
+
     images_dir.mkdir(parents=True, exist_ok=True)
     image_map: dict[tuple[int, int], str] = {}
     image_counter = 0
@@ -115,28 +118,47 @@ def _extract_embedded_images(
 
                 image_bytes = base_image["image"]
                 image_ext = base_image["ext"]
+                colorspace = base_image.get("colorspace", 0)
 
-                # Generate filename
+                # Generate filename - use png for images with alpha/ARGB
+                # to preserve transparency correctly
+                img = Image.open(io.BytesIO(image_bytes))
+                has_alpha = img.mode in ("RGBA", "LA", "PA") or "A" in img.mode
+
+                # Force PNG for ARGB images to preserve alpha correctly
+                actual_fmt = "png" if has_alpha else fmt
+
                 image_counter += 1
-                filename = f"img_{image_counter:04d}.{fmt}"
+                filename = f"img_{image_counter:04d}.{actual_fmt}"
                 output_path = images_dir / filename
 
-                # Save image
-                if fmt == image_ext:
-                    # Same format, just write bytes
+                # Save image with proper handling
+                if has_alpha:
+                    # For images with alpha, convert to RGBA and save as PNG
+                    if img.mode != "RGBA":
+                        img = img.convert("RGBA")
+                    img.save(output_path, "PNG")
+                elif actual_fmt == image_ext and not has_alpha:
+                    # Same format, no alpha - just write bytes
                     output_path.write_bytes(image_bytes)
                 else:
                     # Convert format
-                    from PIL import Image
-                    import io
-
-                    img = Image.open(io.BytesIO(image_bytes))
-                    if fmt == "jpg" and img.mode in ("RGBA", "P"):
+                    if actual_fmt == "jpg" and img.mode in ("RGBA", "P", "LA", "PA"):
+                        # Create white background for transparency
+                        if img.mode == "P":
+                            img = img.convert("RGBA")
+                        background = Image.new("RGB", img.size, (255, 255, 255))
+                        if img.mode == "RGBA":
+                            background.paste(img, mask=img.split()[3])
+                        else:
+                            background.paste(img)
+                        img = background
+                    elif img.mode not in ("RGB", "L"):
                         img = img.convert("RGB")
-                    img.save(output_path, fmt.upper(), quality=95)
+                    img.save(output_path, actual_fmt.upper(), quality=95)
 
                 image_map[key] = filename
-                print(f"  Extracted: {filename} ({width}x{height})")
+                print(f"  Extracted: {filename} ({width}x{height}, mode={img.mode})")
 
             except Exception as e:
                 print(f"  Warning: Failed to extract image xref={xref}: {e}")
