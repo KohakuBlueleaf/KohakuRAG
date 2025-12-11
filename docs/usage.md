@@ -40,6 +40,7 @@ Example configs are provided in the `configs/` directory:
 | Config | Script | Description |
 |--------|--------|-------------|
 | `configs/text_only/index.py` | `wattbot_build_index.py` | Build text-only index |
+| `configs/text_only/bm25_index.py` | `wattbot_build_bm25_index.py` | Build BM25 sparse index |
 | `configs/text_only/answer.py` | `wattbot_answer.py` | Generate answers (no images) |
 
 ### Image-Enhanced Path (`configs/with_images/`)
@@ -49,6 +50,7 @@ Example configs are provided in the `configs/` directory:
 | `configs/with_images/caption.py` | `wattbot_add_image_captions.py` | Add image captions |
 | `configs/with_images/index.py` | `wattbot_build_index.py` | Build image-enhanced index |
 | `configs/with_images/image_index.py` | `wattbot_build_image_index.py` | Build image-only retrieval index |
+| `configs/with_images/bm25_index.py` | `wattbot_build_bm25_index.py` | Build BM25 sparse index |
 | `configs/with_images/answer.py` | `wattbot_answer.py` | Generate answers (with images) |
 
 ### JinaV4 Multimodal Path (`configs/jinav4/`)
@@ -57,6 +59,7 @@ Example configs are provided in the `configs/` directory:
 |--------|--------|-------------|
 | `configs/jinav4/index.py` | `wattbot_build_index.py` | Build JinaV4 index |
 | `configs/jinav4/image_index.py` | `wattbot_build_image_index.py` | Build JinaV4 image index |
+| `configs/jinav4/bm25_index.py` | `wattbot_build_bm25_index.py` | Build BM25 sparse index |
 | `configs/jinav4/answer.py` | `wattbot_answer.py` | Generate answers (JinaV4) |
 | `configs/jinav4/caption.py` | `wattbot_add_image_captions.py` | Add image captions |
 
@@ -491,6 +494,7 @@ KohakuRAG includes comprehensive sweep workflows for systematic optimization.
 | `top_k_vs_max_retries.py` | max_retries | top_k | Compare retry strategies |
 | `top_k_vs_top_k_final.py` | top_k_final | top_k | Compare truncation limits |
 | `planner_queries_vs_top_k.py` | planner_max_queries | top_k | Compare query planning |
+| `bm25_top_k_vs_top_k.py` | bm25_top_k | top_k | Compare BM25 hybrid retrieval |
 | `llm_model_vs_embedding.py` | embedding_config | llm_model | Compare LLM models |
 | `ensemble_inference.py` | - | - | Run N inferences for ensemble |
 | `ensemble_vs_ref_vote.py` | ref_vote_mode | ensemble_size | Compare aggregation modes |
@@ -701,6 +705,7 @@ if __name__ == "__main__":
 | `top_k_final` | int | None | Truncate after dedup+rerank |
 | `with_images` | bool | False | Enable image retrieval |
 | `top_k_images` | int | 0 | Images from dedicated index |
+| `bm25_top_k` | int | 0 | Additional BM25 results (0 = disabled) |
 | `max_concurrent` | int | 10 | Max concurrent API requests |
 | `max_retries` | int | 3 | Retry attempts for blank answers |
 | `use_reordered_prompt` | bool | False | Reorder context in prompt |

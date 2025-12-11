@@ -438,6 +438,7 @@ For detailed architecture documentation, see [`docs/architecture.md`](docs/archi
 - **[Usage Guide](docs/usage.md)** — Complete workflow examples and config reference
 - **[WattBot Playbook](docs/wattbot.md)** — Competition-specific setup and validation
 - **[JinaV4 Workflows](docs/jinav4_workflows.md)** — Multimodal embedding guide
+- **[BM25 Hybrid Search](docs/bm25_hybrid_search.md)** — Sparse + dense hybrid retrieval
 - **[Dedup & Rerank](docs/dedup_rerank.md)** — Multi-query retrieval optimization
 - **[Image RAG Examples](docs/image_rag_example.md)** — Multimodal RAG with vision models
 - **[API Reference](docs/api_reference.md)** — Detailed API documentation
