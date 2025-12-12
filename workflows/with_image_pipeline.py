@@ -90,8 +90,8 @@ if __name__ == "__main__":
         Script("scripts/wattbot_add_image_captions.py", config=caption_config),
         Script("scripts/wattbot_build_index.py", config=index_config),
         Script("scripts/wattbot_build_image_index.py", config=image_index_config),
-        Script("scripts/wattbot_answer.py", config=answer_config),
-        Script("scripts/wattbot_validate.py", config=validate_config),
+        # Script("scripts/wattbot_answer.py", config=answer_config),
+        # Script("scripts/wattbot_validate.py", config=validate_config),
     ]
 
     flow = Flow(scripts, mode="sequential")
