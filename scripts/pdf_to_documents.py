@@ -16,7 +16,7 @@ Configuration:
     input: Path to input PDF file
     output: Output directory (default: same name as PDF without extension)
     page_dpi: DPI for rendered page images (default: 150)
-    image_format: Format for images - "png", "jpg", "webp" (default: "png")
+    image_format: Format for images - "png" or "jpg" (default: "png")
     extract_images: Whether to extract embedded images (default: True)
     render_pages: Whether to render page images (default: True)
     min_image_size: Minimum image dimension to extract (default: 50)
@@ -36,7 +36,7 @@ import fitz  # pymupdf
 input: str = ""
 output: str | None = None  # None = use input filename without extension
 page_dpi: int = 150
-image_format: str = "png"  # "png", "jpg", "webp"
+image_format: str = "png"  # "png" or "jpg" (images with alpha always saved as PNG)
 extract_images: bool = True
 render_pages: bool = True
 min_image_size: int = 50  # Minimum width/height to extract embedded images
@@ -52,21 +52,26 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _save_pixmap(pix: fitz.Pixmap, output_path: Path, fmt: str) -> None:
-    """Save pixmap to file with format handling."""
-    if fmt == "webp":
-        from PIL import Image
+    """Save pixmap to file with format handling.
 
-        if pix.alpha:
-            img = Image.frombytes("RGBA", [pix.width, pix.height], pix.samples)
-        else:
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        img.save(output_path, "WEBP", quality=95)
+    - Images with alpha channel are saved as PNG (RGBA)
+    - Images without alpha are saved in the requested format (png/jpg)
+    - When converting RGBA to JPG, a white background is composited
+    """
+    from PIL import Image
+
+    # If pixmap has alpha, always save as PNG to preserve transparency
+    if pix.alpha:
+        img = Image.frombytes("RGBA", [pix.width, pix.height], pix.samples)
+        # Change extension to .png for alpha images
+        output_path = output_path.with_suffix(".png")
+        img.save(output_path, "PNG")
     elif fmt == "jpg":
-        # Convert to RGB if has alpha
-        if pix.alpha:
-            pix = fitz.Pixmap(fitz.csRGB, pix)
-        pix.save(output_path, jpg_quality=95)
+        # No alpha, save as JPEG
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        img.save(output_path, "JPEG", quality=95)
     else:
+        # No alpha, save as PNG
         pix.save(output_path)
 
 
@@ -119,13 +124,34 @@ def _extract_embedded_images(
                 image_bytes = base_image["image"]
                 image_ext = base_image["ext"]
                 colorspace = base_image.get("colorspace", 0)
+                smask_xref = base_image.get("smask", 0)  # Soft mask (alpha) xref
 
-                # Generate filename - use png for images with alpha/ARGB
-                # to preserve transparency correctly
+                # Load the base image
                 img = Image.open(io.BytesIO(image_bytes))
+
+                # Check if image has alpha - either in mode or via separate soft mask
                 has_alpha = img.mode in ("RGBA", "LA", "PA") or "A" in img.mode
 
-                # Force PNG for ARGB images to preserve alpha correctly
+                # Handle soft mask (separate alpha channel in PDF)
+                # SMask always takes priority - base image alpha is often just placeholder (all 255)
+                if smask_xref:
+                    try:
+                        smask_image = doc.extract_image(smask_xref)
+                        if smask_image:
+                            alpha_bytes = smask_image["image"]
+                            alpha_img = Image.open(io.BytesIO(alpha_bytes)).convert("L")
+                            # Resize alpha if dimensions don't match
+                            if alpha_img.size != img.size:
+                                alpha_img = alpha_img.resize(img.size, Image.LANCZOS)
+                            # Convert base image to RGB first (discard any fake alpha), then add real alpha
+                            img = img.convert("RGB")
+                            img = img.convert("RGBA")
+                            img.putalpha(alpha_img)
+                            has_alpha = True
+                    except Exception as e:
+                        print(f"  Warning: Failed to extract soft mask: {e}")
+
+                # Force PNG for images with alpha to preserve transparency
                 actual_fmt = "png" if has_alpha else fmt
 
                 image_counter += 1
@@ -133,32 +159,28 @@ def _extract_embedded_images(
                 output_path = images_dir / filename
 
                 # Save image with proper handling
+                # - Images with alpha: always save as RGBA PNG
+                # - Images without alpha: save in requested format (png/jpg)
                 if has_alpha:
                     # For images with alpha, convert to RGBA and save as PNG
                     if img.mode != "RGBA":
                         img = img.convert("RGBA")
                     img.save(output_path, "PNG")
-                elif actual_fmt == image_ext and not has_alpha:
-                    # Same format, no alpha - just write bytes
+                elif actual_fmt == "jpg":
+                    # Save as JPEG - convert to RGB if needed
+                    if img.mode not in ("RGB", "L"):
+                        img = img.convert("RGB")
+                    img.save(output_path, "JPEG", quality=95)
+                elif actual_fmt == image_ext:
+                    # Same format, no conversion needed - just write bytes
                     output_path.write_bytes(image_bytes)
                 else:
-                    # Convert format
-                    if actual_fmt == "jpg" and img.mode in ("RGBA", "P", "LA", "PA"):
-                        # Create white background for transparency
-                        if img.mode == "P":
-                            img = img.convert("RGBA")
-                        background = Image.new("RGB", img.size, (255, 255, 255))
-                        if img.mode == "RGBA":
-                            background.paste(img, mask=img.split()[3])
-                        else:
-                            background.paste(img)
-                        img = background
-                    elif img.mode not in ("RGB", "L"):
-                        img = img.convert("RGB")
-                    img.save(output_path, actual_fmt.upper(), quality=95)
+                    # Convert to PNG
+                    img.save(output_path, "PNG")
 
                 image_map[key] = filename
-                print(f"  Extracted: {filename} ({width}x{height}, mode={img.mode})")
+                smask_info = f", smask={smask_xref}" if smask_xref else ""
+                print(f"  Extracted: {filename} ({width}x{height}, mode={img.mode}{smask_info})")
 
             except Exception as e:
                 print(f"  Warning: Failed to extract image xref={xref}: {e}")
