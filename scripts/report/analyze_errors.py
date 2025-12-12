@@ -114,13 +114,15 @@ def is_power_of_10_ratio(ratio: float, tolerance: float = 0.05) -> bool:
         return False
 
     # Check if within tolerance of nearest power of 10
-    power_of_10 = 10 ** nearest_int
+    power_of_10 = 10**nearest_int
     relative_diff = abs(ratio - power_of_10) / power_of_10
 
     return relative_diff <= tolerance
 
 
-def check_numeric_match(true_val: float, pred_val: float) -> tuple[bool, float, str | None]:
+def check_numeric_match(
+    true_val: float, pred_val: float
+) -> tuple[bool, float, str | None]:
     """Check numeric match and return (is_match, percent_error, error_type).
 
     Returns:
@@ -132,7 +134,7 @@ def check_numeric_match(true_val: float, pred_val: float) -> tuple[bool, float, 
         if pred_val == 0:
             return True, 0.0, None
         else:
-            return False, float('inf'), "value_error"
+            return False, float("inf"), "value_error"
 
     percent_error = abs(true_val - pred_val) / abs(true_val) * 100
 
@@ -141,7 +143,7 @@ def check_numeric_match(true_val: float, pred_val: float) -> tuple[bool, float, 
         return True, percent_error, None
 
     # Check for unit conversion error (ratio near power of 10)
-    ratio = pred_val / true_val if true_val != 0 else float('inf')
+    ratio = pred_val / true_val if true_val != 0 else float("inf")
     if is_power_of_10_ratio(ratio):
         return False, percent_error, "unit_conversion"
 
@@ -196,8 +198,12 @@ def categorize_error(
     if true_range is not None:
         if pred_range is not None:
             # Both are ranges - check both bounds
-            lower_match, lower_err, lower_type = check_numeric_match(true_range[0], pred_range[0])
-            upper_match, upper_err, upper_type = check_numeric_match(true_range[1], pred_range[1])
+            lower_match, lower_err, lower_type = check_numeric_match(
+                true_range[0], pred_range[0]
+            )
+            upper_match, upper_err, upper_type = check_numeric_match(
+                true_range[1], pred_range[1]
+            )
 
             value_correct = lower_match and upper_match
 
@@ -221,7 +227,9 @@ def categorize_error(
     pred_num = parse_numeric(pred_value)
 
     if true_num is not None and pred_num is not None:
-        value_correct, percent_error, error_type = check_numeric_match(true_num, pred_num)
+        value_correct, percent_error, error_type = check_numeric_match(
+            true_num, pred_num
+        )
         details["percent_error"] = percent_error
         details["ratio"] = pred_num / true_num if true_num != 0 else None
 
@@ -327,7 +335,8 @@ def main():
     print("=" * 70)
     print("ERROR CATEGORIZATION CRITERIA")
     print("=" * 70)
-    print("""
+    print(
+        """
 1. Unit conversion: Numeric ratio within ±5% of power of 10 (10x, 100x, etc.)
 2. Rounding/calculation: Numeric error within ±10% but outside 0.1% tolerance
 3. Reference mismatch: Correct value, incorrect ref_id
@@ -336,13 +345,16 @@ def main():
 6. Value error: Numeric error >10% not matching unit conversion pattern
 7. Type mismatch: Expected numeric got text, or vice versa
 8. Categorical mismatch: Text answer mismatch
-""")
+"""
+    )
 
     print("=" * 70)
     print("ERROR ANALYSIS SUMMARY")
     print("=" * 70)
     print(f"Total predictions: {total_predictions}")
-    print(f"Correct predictions: {correct_predictions} ({correct_predictions/total_predictions*100:.1f}%)")
+    print(
+        f"Correct predictions: {correct_predictions} ({correct_predictions/total_predictions*100:.1f}%)"
+    )
     print(f"Total errors: {total_errors} ({total_errors/total_predictions*100:.1f}%)")
     print()
 
@@ -383,7 +395,9 @@ def main():
             print(f"\n{name}:")
             for ex in examples:
                 print(f"  Q: {ex.get('qid')} - {ex.get('question', '')[:60]}...")
-                print(f"     True: {ex.get('true_value')} | Pred: {ex.get('pred_value')}")
+                print(
+                    f"     True: {ex.get('true_value')} | Pred: {ex.get('pred_value')}"
+                )
                 if "percent_error" in ex:
                     print(f"     Error: {ex['percent_error']:.2f}%", end="")
                     if "ratio" in ex and ex["ratio"]:
@@ -398,7 +412,8 @@ def main():
     print("\n" + "=" * 70)
     print("LATEX OUTPUT FOR APPENDIX")
     print("=" * 70)
-    print("""
+    print(
+        """
 \\paragraph{Error Categorization Criteria.}
 We classify prediction errors using the following precise criteria:
 \\begin{itemize}[noitemsep]
@@ -411,7 +426,8 @@ We classify prediction errors using the following precise criteria:
     \\item \\textbf{Type mismatch}: Expected numeric value but received text, or vice versa.
     \\item \\textbf{Categorical mismatch}: Non-numeric text answer does not match ground truth.
 \\end{itemize}
-""")
+"""
+    )
 
     print("\n\\paragraph{Error Distribution.}")
     print("\\begin{itemize}[noitemsep]")

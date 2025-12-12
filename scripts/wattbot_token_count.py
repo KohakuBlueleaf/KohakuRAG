@@ -74,7 +74,9 @@ async def main() -> None:
         total_tokens += batch_tokens
 
         if (i // batch_size) % 10 == 0:
-            print(f"  Processed {min(i + batch_size, len(sentence_texts))}/{len(sentence_texts)} sentences...")
+            print(
+                f"  Processed {min(i + batch_size, len(sentence_texts))}/{len(sentence_texts)} sentences..."
+            )
 
     print(f"\n{'=' * 50}")
     print(f"RESULTS")

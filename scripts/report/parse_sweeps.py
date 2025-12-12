@@ -99,7 +99,9 @@ def get_sorted_values(results: dict, key_idx: int) -> list:
         return vals
 
 
-def compute_average_ranks(results: dict, line_vals: list, x_vals: list, metric: str = "final") -> dict[str, float]:
+def compute_average_ranks(
+    results: dict, line_vals: list, x_vals: list, metric: str = "final"
+) -> dict[str, float]:
     """Compute average rank across x_vals for each line_val.
 
     For each x value (column), rank all line values by their score.
@@ -336,7 +338,9 @@ def run_significance_tests(data: dict, metric: str = "final") -> None:
 
         for other_name, other_scores, other_mean in configs[1:]:
             # Welch's t-test (does not assume equal variances)
-            t_stat, p_value = stats.ttest_ind(best_scores, other_scores, equal_var=False)
+            t_stat, p_value = stats.ttest_ind(
+                best_scores, other_scores, equal_var=False
+            )
 
             # Cohen's d effect size
             pooled_std = np.sqrt((np.var(best_scores) + np.var(other_scores)) / 2)
@@ -358,8 +362,10 @@ def run_significance_tests(data: dict, metric: str = "final") -> None:
             elif p_value < 0.10:
                 sig = "^"  # marginal significance
 
-            print(f"  vs {other_name}: d={best_mean - other_mean:+.4f}, "
-                  f"p={p_value:.4f}{sig}, Cohen's d={cohens_d:.2f}")
+            print(
+                f"  vs {other_name}: d={best_mean - other_mean:+.4f}, "
+                f"p={p_value:.4f}{sig}, Cohen's d={cohens_d:.2f}"
+            )
 
 
 def generate_significance_latex(data: dict, metric: str = "final") -> str:
@@ -408,10 +414,16 @@ def generate_significance_latex(data: dict, metric: str = "final") -> str:
 
     # Build table with significance markers
     lines = []
-    lines.append("% Significance: † p<0.10 (marginal), * p<0.05, ** p<0.01, *** p<0.001 (vs best in column)")
+    lines.append(
+        "% Significance: † p<0.10 (marginal), * p<0.05, ** p<0.01, *** p<0.001 (vs best in column)"
+    )
     lines.append("\\begin{table}[t]")
     lines.append("\\centering")
-    lines.append("\\caption{" + f"{data['name'].replace('_', ' ').title()} with significance markers" + "}")
+    lines.append(
+        "\\caption{"
+        + f"{data['name'].replace('_', ' ').title()} with significance markers"
+        + "}"
+    )
     lines.append("\\label{tab:" + data["name"] + "_sig}")
 
     col_spec = "l" + "c" * len(x_vals)

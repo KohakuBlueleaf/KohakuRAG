@@ -825,11 +825,9 @@ async def main() -> None:
 
     # Save 2D coordinates and metadata to JSON for downstream analysis
     import json
+
     output_json = output.rsplit(".", 1)[0] + "_data.json"
-    export_data = {
-        "method": method,
-        "points": []
-    }
+    export_data = {"method": method, "points": []}
     for type_name, coords in reduced.items():
         type_doc_ids = doc_ids.get(type_name, []) if doc_ids else []
         for i, (x, y) in enumerate(coords):
@@ -837,7 +835,7 @@ async def main() -> None:
                 "x": float(x),
                 "y": float(y),
                 "type": type_name,
-                "doc_id": type_doc_ids[i] if i < len(type_doc_ids) else None
+                "doc_id": type_doc_ids[i] if i < len(type_doc_ids) else None,
             }
             export_data["points"].append(point)
 

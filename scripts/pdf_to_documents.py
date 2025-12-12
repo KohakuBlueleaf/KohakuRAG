@@ -180,7 +180,9 @@ def _extract_embedded_images(
 
                 image_map[key] = filename
                 smask_info = f", smask={smask_xref}" if smask_xref else ""
-                print(f"  Extracted: {filename} ({width}x{height}, mode={img.mode}{smask_info})")
+                print(
+                    f"  Extracted: {filename} ({width}x{height}, mode={img.mode}{smask_info})"
+                )
 
             except Exception as e:
                 print(f"  Warning: Failed to extract image xref={xref}: {e}")
