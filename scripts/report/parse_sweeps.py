@@ -5,6 +5,7 @@ Usage:
     python scripts/report/parse_sweeps.py
     python scripts/report/parse_sweeps.py --latex  # Output LaTeX tables
     python scripts/report/parse_sweeps.py --sweep llm_model_vs_top_k  # Single sweep
+    python scripts/report/parse_sweeps.py --significance  # Run statistical significance tests
 """
 
 import argparse
@@ -14,6 +15,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from scipy import stats
 
 SWEEPS_DIR = Path("outputs/sweeps")
 
@@ -63,16 +65,19 @@ def parse_sweep(sweep_path: Path) -> dict | None:
                 "mean": np.mean(final_scores),
                 "std": np.std(final_scores),
                 "max": np.max(final_scores),
+                "scores": final_scores,  # Keep raw scores for significance tests
             },
             "value": {
                 "mean": np.mean(value_scores),
                 "std": np.std(value_scores),
                 "max": np.max(value_scores),
+                "scores": value_scores,
             },
             "ref": {
                 "mean": np.mean(ref_scores),
                 "std": np.std(ref_scores),
                 "max": np.max(ref_scores),
+                "scores": ref_scores,
             },
             "n": len(score_list),
         }
@@ -288,6 +293,175 @@ def generate_latex_table(
     return "\n".join(lines)
 
 
+def run_significance_tests(data: dict, metric: str = "final") -> None:
+    """Run paired t-tests between configurations within each sweep.
+
+    For each x value (e.g., top_k), compares the best configuration against others.
+    Reports p-values and effect sizes (Cohen's d).
+    """
+    meta = data["metadata"]
+    results = data["results"]
+    line_param = meta["line_param"]
+    x_param = meta["x_param"]
+
+    print(f"\n{'=' * 70}")
+    print(f"STATISTICAL SIGNIFICANCE TESTS: {data['name']}")
+    print(f"Metric: {metric}, Comparing: {line_param}")
+    print(f"{'=' * 70}")
+
+    line_vals = get_sorted_values(results, 0)
+    x_vals = get_sorted_values(results, 1)
+
+    for x in x_vals:
+        print(f"\n--- {x_param} = {x} ---")
+
+        # Get scores for each line value at this x
+        configs = []
+        for line in line_vals:
+            if (line, x) in results:
+                scores = results[(line, x)][metric].get("scores", [])
+                if len(scores) >= 2:  # Need at least 2 samples for t-test
+                    configs.append((line, scores, np.mean(scores)))
+
+        if len(configs) < 2:
+            print("  Insufficient data for comparison")
+            continue
+
+        # Sort by mean score descending
+        configs.sort(key=lambda c: c[2], reverse=True)
+        best_name, best_scores, best_mean = configs[0]
+
+        print(f"  Best: {best_name} (mean={best_mean:.4f}, n={len(best_scores)})")
+        print()
+
+        for other_name, other_scores, other_mean in configs[1:]:
+            # Welch's t-test (does not assume equal variances)
+            t_stat, p_value = stats.ttest_ind(best_scores, other_scores, equal_var=False)
+
+            # Cohen's d effect size
+            pooled_std = np.sqrt((np.var(best_scores) + np.var(other_scores)) / 2)
+            if pooled_std > 0:
+                cohens_d = (best_mean - other_mean) / pooled_std
+            else:
+                cohens_d = 0.0
+
+            # Significance markers
+            # Note: marginal (^) for p in [0.05, 0.10) due to small sample sizes
+            # and inherent LLM sampling randomness
+            sig = ""
+            if p_value < 0.001:
+                sig = "***"
+            elif p_value < 0.01:
+                sig = "**"
+            elif p_value < 0.05:
+                sig = "*"
+            elif p_value < 0.10:
+                sig = "^"  # marginal significance
+
+            print(f"  vs {other_name}: d={best_mean - other_mean:+.4f}, "
+                  f"p={p_value:.4f}{sig}, Cohen's d={cohens_d:.2f}")
+
+
+def generate_significance_latex(data: dict, metric: str = "final") -> str:
+    """Generate LaTeX table with significance annotations."""
+    meta = data["metadata"]
+    results = data["results"]
+    line_param = meta["line_param"]
+    x_param = meta["x_param"]
+
+    line_vals = get_sorted_values(results, 0)
+    x_vals = get_sorted_values(results, 1)
+
+    # For each x value, compute pairwise significance vs best
+    significance_markers = {}  # (line, x) -> marker string
+
+    for x in x_vals:
+        configs = []
+        for line in line_vals:
+            if (line, x) in results:
+                scores = results[(line, x)][metric].get("scores", [])
+                if len(scores) >= 2:
+                    configs.append((line, scores, np.mean(scores)))
+
+        if len(configs) < 2:
+            continue
+
+        configs.sort(key=lambda c: c[2], reverse=True)
+        best_name, best_scores, _ = configs[0]
+
+        for other_name, other_scores, _ in configs[1:]:
+            _, p_value = stats.ttest_ind(best_scores, other_scores, equal_var=False)
+
+            # Note: marginal (†) for p in [0.05, 0.10) due to small sample sizes
+            # and inherent LLM sampling randomness
+            marker = ""
+            if p_value < 0.001:
+                marker = "$^{***}$"
+            elif p_value < 0.01:
+                marker = "$^{**}$"
+            elif p_value < 0.05:
+                marker = "$^{*}$"
+            elif p_value < 0.10:
+                marker = "$^{\\dagger}$"  # marginal significance
+
+            significance_markers[(other_name, x)] = marker
+
+    # Build table with significance markers
+    lines = []
+    lines.append("% Significance: † p<0.10 (marginal), * p<0.05, ** p<0.01, *** p<0.001 (vs best in column)")
+    lines.append("\\begin{table}[t]")
+    lines.append("\\centering")
+    lines.append("\\caption{" + f"{data['name'].replace('_', ' ').title()} with significance markers" + "}")
+    lines.append("\\label{tab:" + data["name"] + "_sig}")
+
+    col_spec = "l" + "c" * len(x_vals)
+    lines.append("\\begin{tabular}{" + col_spec + "}")
+    lines.append("\\toprule")
+
+    header = f"\\textbf{{{line_param}}}"
+    for x in x_vals:
+        header += f" & \\textbf{{{x}}}"
+    header += " \\\\"
+    lines.append(header)
+    lines.append("\\midrule")
+
+    # Find best per column
+    best_per_col = {}
+    for x in x_vals:
+        best_score = -1
+        best_line = None
+        for line in line_vals:
+            if (line, x) in results:
+                score = results[(line, x)][metric]["mean"]
+                if score > best_score:
+                    best_score = score
+                    best_line = line
+        best_per_col[x] = best_line
+
+    for line in line_vals:
+        row = str(line).replace("_", "\\_")
+        for x in x_vals:
+            if (line, x) in results:
+                r = results[(line, x)][metric]
+                val_str = f"{r['mean']:.3f}"
+                marker = significance_markers.get((line, x), "")
+
+                if best_per_col.get(x) == line:
+                    val_str = f"\\textbf{{{val_str}}}"
+
+                row += f" & {val_str}{marker}"
+            else:
+                row += " & --"
+        row += " \\\\"
+        lines.append(row)
+
+    lines.append("\\bottomrule")
+    lines.append("\\end{tabular}")
+    lines.append("\\end{table}")
+
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Parse sweep results")
     parser.add_argument("--latex", action="store_true", help="Output LaTeX tables")
@@ -308,6 +482,16 @@ def main():
         "--no-avg-rank",
         action="store_true",
         help="Don't show average rank column",
+    )
+    parser.add_argument(
+        "--significance",
+        action="store_true",
+        help="Run statistical significance tests (paired t-tests)",
+    )
+    parser.add_argument(
+        "--sig-latex",
+        action="store_true",
+        help="Output LaTeX tables with significance markers",
     )
     args = parser.parse_args()
 
@@ -330,7 +514,22 @@ def main():
         return
 
     # Output
-    if args.latex:
+    if args.significance:
+        for data in all_sweeps:
+            run_significance_tests(data, args.metric)
+    elif args.sig_latex:
+        latex_output = []
+        for data in all_sweeps:
+            latex_output.append(generate_significance_latex(data, args.metric))
+            latex_output.append("")
+        output_text = "\n".join(latex_output)
+        if args.output:
+            with open(args.output, "w") as f:
+                f.write(output_text)
+            print(f"LaTeX tables with significance written to {args.output}")
+        else:
+            print(output_text)
+    elif args.latex:
         latex_output = []
         for data in all_sweeps:
             latex_output.append(
